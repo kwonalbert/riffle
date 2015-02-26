@@ -34,6 +34,7 @@ type Server struct {
 	reqRound       int
 
 	//downloading
+	secrets        [][]byte //shared secret used to xor
 
 }
 
