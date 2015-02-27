@@ -31,8 +31,10 @@ type Server struct {
 	totalClients    int //total number of clients (sum of all servers)
 
 	//downloading
+	blocks          []Block
 	masks           [][]byte //clients' masks for PIR
 	secrets         [][]byte //shared secret used to xor
+	otherResps      [][]byte //other servers responding to this
 }
 
 
@@ -52,8 +54,8 @@ func NewServer(addr string, servers []string) *Server {
 		numClients:     0,
 		totalClients:   0,
 
-		masks:          make([][]byte, len(servers)),
-		secrets:        make([][]byte, len(servers)),
+		masks:          nil,
+		secrets:        nil,
 	}
 
 	return &s
@@ -90,8 +92,25 @@ func (s *Server) Register2(client ClientRegistration, _ *int) error {
 	return nil
 }
 
-func (s *Server) RegisterDone(numClients int, _ *int) error {
+func (s *Server) RegisterDone() {
+	rpcServers := make([]*rpc.Client, len(s.servers))
+	for i := range rpcServers {
+		rpcServer, err := rpc.Dial("tcp", s.servers[i])
+		if err != nil {
+			log.Fatal("Cannot establish connection")
+		}
+		err = rpcServer.Call("Server.RegisterDone2", s.totalClients, nil)
+		if err != nil {
+			log.Fatal("Cannot update num clients")
+		}
+	}
+
+}
+
+func (s *Server) RegisterDone2(numClients int, _ *int) error {
 	s.totalClients = numClients
+	s.masks = make([][]byte, numClients)
+	s.secrets = make([][]byte, numClients)
 	return nil
 }
 
@@ -122,6 +141,35 @@ func (s *Server) ShareSecret(clientDH ClientDH, serverPub *[]byte) error {
 
 /////////////////////////////////
 //Download
+////////////////////////////////
+
+func (s *Server) computeResponse(cid int, mask []byte) []byte {
+	response := make([]byte, BlockSize)
+        i := 0
+L:
+        for _, b := range mask {
+                for j := 0; j < 8; j++ {
+                        if b&1 == 1 {
+                                Xor(s.blocks[i].Block, response)
+                        }
+                        b >>= 1
+                        i++
+                        if i >= s.totalClients {
+                                break L
+                        }
+                }
+        }
+	Xor(s.secrets[cid], response)
+        return response
+}
+
+
+
+
+
+
+/////////////////////////////////
+//Misc (mostly for testing)
 ////////////////////////////////
 
 func (s *Server) Masks() [][]byte {

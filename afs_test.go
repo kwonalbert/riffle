@@ -9,7 +9,7 @@ import (
 
 	. "afs/server"
 	. "afs/client"
-	//. "afs/lib"
+	. "afs/lib"
 )
 
 var rpcServers []*rpc.Server
@@ -50,6 +50,10 @@ func setup(numServers int, numClients int) ([]*Server, []*Client) {
 		c.Register("127.0.0.1:8000")
 	}
 
+	servers[0].RegisterDone()
+
+	fmt.Println("Done Registration")
+
 	return servers, clients
 }
 
@@ -64,8 +68,8 @@ func compareSecrets(smasks [][]byte, cmasks [][]byte) {
 }
 
 func TestShareSecret(t *testing.T) {
-	numS := 1
-	numC := 1
+	numS := NumServers
+	numC := NumClients
 
 	servers, clients := setup(numS, numC)
 
@@ -85,4 +89,8 @@ func TestShareSecret(t *testing.T) {
 		compareSecrets(masks, cmasks)
 		compareSecrets(secrets, csecrets)
 	}
+}
+
+func TestPIR(t *testing.T) {
+
 }

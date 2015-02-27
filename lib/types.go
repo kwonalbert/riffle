@@ -5,12 +5,13 @@ import (
 	"github.com/dedis/crypto/edwards"
 )
 
-const NumClients = 5
-const NumServers = 3
+const NumClients = 3
+const NumServers = 2
 
 //sizes in bytes
 const HashSize = 160/8
-const BlockSize = 1024*1024 //1MB
+const BlockSize = 1024 //1KB for testing;
+//const BlockSize = 1024*1024 //1MB
 const SecretSize = 256/8
 
 var Suite abstract.Suite = edwards.NewAES128SHA256Ed25519(false)

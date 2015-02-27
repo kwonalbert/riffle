@@ -141,6 +141,11 @@ func (c *Client) Register(server string) {
 	c.id = id
 }
 
+
+/////////////////////////////////
+//Misc (mostly for testing)
+////////////////////////////////
+
 func (c *Client) Id() int {
 	return c.id
 }
