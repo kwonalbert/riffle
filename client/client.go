@@ -1,14 +1,13 @@
 package client
 
 import (
-	"bytes"
-	// "flag"
-	// "fmt"
+	//"flag"
+	//"fmt"
 	"log"
 	//"net"
 	"net/rpc"
 	"sync"
-	// "time"
+	//"time"
 
 	. "afs/lib" //types and utils
 
@@ -23,83 +22,133 @@ import (
 type Client struct {
 	addr           string //client addr
 	id             int //client id
-	servers        []*rpc.Client //all servers
-	client         *rpc.Client
+	servers        []string //all servers
+	rpcServers     []*rpc.Client
+	myServer       int //server downloading from (using PIR)
+
+	//crypto
+	g              abstract.Group
+	rand           cipher.Stream
 
 	//downloading
-	myServerIdx    int //server downloading from (using PIR)
 	masks          [][]byte //masks used
 	secrets        [][]byte //secret for data
-	msgChan        chan []byte //received messages
 }
 
-func NewClient(addr string, servers []*rpc.Client, client *rpc.Client) *Client {
-	secrets := make([][]byte, len(servers))
-	for i := range secrets {
-		//TODO: should derive the length 256 the pt length..
-		secrets[i] = make([]byte, 256)
+func NewClient(addr string, servers []string, myServer string) *Client {
+	myServerIdx := 0
+	rpcServers := make([]*rpc.Client, len(servers))
+	for i := range rpcServers {
+		if servers[i] == myServer {
+			myServerIdx = i
+		}
+		rpcServer, err := rpc.Dial("tcp", servers[i])
+		if err != nil {
+			log.Fatal("Cannot establish connection")
+		}
+		rpcServers[i] = rpcServer
 	}
 
-	c := Client {
-		addr: addr,
-		servers: servers,
-		client: client,
 
-		secrets: secrets,
-		msgChan: make(chan []byte),
+	//id comes from servers
+	c := Client {
+		addr:           addr,
+		servers:        servers,
+		rpcServers:     rpcServers,
+		myServer:       myServerIdx,
+
+		g:              Suite,
+		rand:           Suite.Cipher(abstract.RandomKey),
+
+		masks:          make([][]byte, len(servers)),
+		secrets:        make([][]byte, len(servers)),
 	}
 
 	return &c
 }
 
-func (c *Client) shareSecret(g abstract.Group, rand cipher.Stream) {
-	gen := g.Point().Base()
-	secret1 := g.Point().Mul(gen, g.Secret().Pick(rand))
-	secret2 := g.Point().Mul(gen, g.Secret().Pick(rand))
+//share one time secret with the server
+func (c *Client) ShareSecret() {
+	gen := c.g.Point().Base()
+	secret1 := c.g.Secret().Pick(c.rand)
+	secret2 := c.g.Secret().Pick(c.rand)
+	public1 := c.g.Point().Mul(gen, secret1)
+	public2 := c.g.Point().Mul(gen, secret2)
 
 	//generate share secrets via Diffie-Hellman w/ all servers
 	//one used for masks, one used for one-time pad
 	var wg sync.WaitGroup
-	for i, server := range c.servers {
+	for i, rpcServer := range c.rpcServers {
 		wg.Add(1)
-		go func(i int, server *rpc.Client) {
-			var serverSecret1 abstract.Secret
-			var serverSecret2 abstract.Secret
+		go func(i int, rpcServer *rpc.Client) {
 			defer wg.Done()
-			err1 := server.Call("Server.ShareSecret", secret1, &serverSecret1)
-			err2 := server.Call("Server.ShareSecret", secret2, &serverSecret2)
-			if err1 != nil {
-				log.Fatal("Failed getting secret: ", err1)
-			} else if err2 != nil  {
-				log.Fatal("Failed getting secret: ", err2)
+
+			cs1 := ClientDH {
+				Public: MarshalPoint(public1),
+				Id: c.id,
 			}
-			sharedSecret1 := g.Point().Mul(secret1, serverSecret1)
-			sharedSecret2 := g.Point().Mul(secret2, serverSecret2)
-			var buf bytes.Buffer
-			sharedSecret1.MarshalTo(&buf)
-			buf.Read(c.masks[i])
-			sharedSecret2.MarshalTo(&buf)
-			buf.Read(c.secrets[i])
-		} (i, server)
+			cs2 := ClientDH {
+				Public: MarshalPoint(public2),
+				Id: c.id,
+			}
+
+			servPub1 := make([]byte, SecretSize)
+			servPub2 := make([]byte, SecretSize)
+			call1 := rpcServer.Go("Server.ShareMask", cs1, &servPub1, nil)
+			call2 := rpcServer.Go("Server.ShareSecret", cs2, &servPub2, nil)
+			_ = <-call1.Done
+			_ = <-call2.Done
+			c.masks[i] = MarshalPoint(c.g.Point().Mul(UnmarshalPoint(servPub1), secret1))
+			c.secrets[i] = MarshalPoint(c.g.Point().Mul(UnmarshalPoint(servPub2), secret2))
+		} (i, rpcServer)
 	}
 	wg.Wait()
 }
 
-func (c *Client) getResponse(slot int) []byte {
+func (c *Client) GetResponse(slot int) []byte {
 	//all but one server uses the prng technique
 	mask := make([]byte, SecretSize)
 	SetBit(slot, true, mask)
 	mask = Xors(c.masks)
-	Xor(c.masks[c.myServerIdx], mask)
+	Xor(c.masks[c.myServer], mask)
 
 
 	//one response includes all the secrets
 	response := make([]byte, BlockSize)
 	responseXor := Xors(c.secrets)
-	c.servers[c.myServerIdx].Call("Server.GetResponse", mask, &response)
+	c.rpcServers[c.myServer].Call("Server.GetResponse", mask, &response)
 	Xor(responseXor, response)
 
 	//TODO: call PRNG to update all secrets
 
 	return response
+}
+
+func (c *Client) Register(server string) {
+	cr := ClientRegistration {
+		Addr: c.addr,
+		Server: c.servers[c.myServer],
+	}
+	var id int
+	s, err := rpc.Dial("tcp", server)
+	if err != nil {
+		log.Fatal("Couldn't connect to a server: ", err)
+	}
+	err = s.Call("Server.Register", cr, &id)
+	if err != nil {
+		log.Fatal("Couldn't register: ", err)
+	}
+	c.id = id
+}
+
+func (c *Client) Id() int {
+	return c.id
+}
+
+func (c *Client) Masks() [][]byte {
+	return c.masks
+}
+
+func (c *Client) Secrets() [][]byte {
+	return c.secrets
 }

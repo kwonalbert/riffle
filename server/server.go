@@ -2,116 +2,132 @@ package server
 
 import (
 	// "flag"
-	// "fmt"
-	// "log"
+	"fmt"
+	"log"
 	// "net"
-	// "net/rpc"
+	"net/rpc"
+	"sync"
 	// "time"
 
-	. "lib" //types and utils
-	. "client"
+	. "afs/lib" //types and utils
+
+	"github.com/dedis/crypto/abstract"
+	"github.com/dedis/crypto/cipher"
 )
 
-const BufSize = 5
-
 type Server struct {
-	addr           string //server addr
-	blocks         [][]Block
-	reqs           [][][]byte //reqs to this server
-	allReqs        [][][]byte //all clients' reqs
+	addr            string //this server
+	servers         []string //other servers
+
+	regLock         sync.Mutex //registration mutex
+
+	//crypto
+	g               abstract.Group
+	rand            cipher.Stream
 
 	//clients
-	clients        []Client //clients connected here
-	numClients     int //#clients connect here
-	totalClients   int //total number of clients (sum of all servers)
-
-	//uploading
-	upsChan        chan Block
-	upRound        int
-
-	//requesting
-	reqsChan       chan Request
-	reqRound       int
+	clients         []string //clients connected here
+	numClients      int //#clients connect here
+	totalClients    int //total number of clients (sum of all servers)
 
 	//downloading
-	secrets        [][]byte //shared secret used to xor
-
+	masks           [][]byte //clients' masks for PIR
+	secrets         [][]byte //shared secret used to xor
 }
 
-func NewServer(addr string) *Server {
+
+///////////////////////////////
+//Initial Setup
+//////////////////////////////
+
+func NewServer(addr string, servers []string) *Server {
 	s := Server{
-		addr:         addr,
-		blocks:       nil,
-		reqs:         nil,
-		allReqs:      nil,
+		addr:           addr,
+		servers:        servers,
 
-		clients:      nil,
-		numClients:   0,
-		totalClients: 0,
+		g:              Suite,
+		rand:           Suite.Cipher(abstract.RandomKey),
 
-		//AK: add some buffers here for efficieny?
-		upsChan:      make(chan Block),
+		clients:        []string{},
+		numClients:     0,
+		totalClients:   0,
 
-
-		reqsChan:     make(chan Request),
+		masks:          make([][]byte, len(servers)),
+		secrets:        make([][]byte, len(servers)),
 	}
 
 	return &s
 }
 
-//request a block by uploading hash to this server; rpc call
-func (s *Server) ReqBlock(h Request, _ *int) error {
-	s.reqsChan <- h
+//register the client here, and notify the server it will be talking to
+func (s *Server) Register(client ClientRegistration, clientId *int) error {
+	s.regLock.Lock()
+	*clientId = s.totalClients
+	s.totalClients++
+	if s.addr == client.Server {
+		s.numClients++
+		s.clients = append(s.clients, client.Addr)
+	} else {
+		server, err := rpc.Dial("tcp", client.Server)
+		if err != nil {
+			log.Fatal(fmt.Sprintf("Server %s cannot connect to %s: ", s.addr, client.Server), err)
+		}
+		err = server.Call("Server.Register2", client, nil)
+		if err != nil {
+			log.Fatal(fmt.Sprintf("Cannot connect to %s: ", client.Server), err)
+		}
+	}
+	s.regLock.Unlock()
 	return nil
 }
 
-//TODO: better way to handle multiple rounds of request
-//TODO: make sure the a request isn't deleted before it's serviced
-func (s *Server) GatherReq() {
-	for i := 0; i < s.numClients; i++ {
-		req := <-s.reqsChan
-		s.reqs[req.Round % BufSize][i] = req.Hash
-	}
-}
-
-//broadcast all requests to uploaders(clients)
-func (s *Server) BroadcastReq() {
-	// for i, c := range s.clients {
-	// 	//TODO: call rpc to broadcast
-	// }
-}
-
-//upload a block to this server; rpc call
-func (s *Server) UpBlock(b Block, _ *int) error {
-	s.upsChan <- b
+//called to increment total number of clients
+func (s *Server) Register2(client ClientRegistration, _ *int) error {
+	s.regLock.Lock()
+	s.numClients++
+	s.clients = append(s.clients, client.Addr)
+	s.regLock.Unlock()
 	return nil
 }
 
-//broadcast all available hashes to downloaders(clients)
-func (s *Server) BroadcastAvailable() {
-
+func (s *Server) RegisterDone(numClients int, _ *int) error {
+	s.totalClients = numClients
+	return nil
 }
 
-//download is done through PIR
-/*
-TODO: Code from PIR part goes here
-*/
+//DH exchange
+func (s *Server) shareSecret(clientPublic abstract.Point) (abstract.Point, abstract.Point) {
+	gen := s.g.Point().Base()
+	secret := s.g.Secret().Pick(s.rand)
+	public := s.g.Point().Mul(gen, secret)
+	sharedSecret := s.g.Point().Mul(clientPublic, secret)
+	return public, sharedSecret
+}
 
-//setup the clients, and other anonymity servers
-//TODO: setup server's arr for blocks,requests,etc based on the num client
-func (s *Server) setup() {
+func (s *Server) ShareMask(clientDH ClientDH, serverPub *[]byte) error {
+	pub, shared := s.shareSecret(UnmarshalPoint(clientDH.Public))
+	s.masks[clientDH.Id] = MarshalPoint(shared)
+	*serverPub = MarshalPoint(pub)
+	return nil
+}
 
+func (s *Server) ShareSecret(clientDH ClientDH, serverPub *[]byte) error {
+	pub, shared := s.shareSecret(UnmarshalPoint(clientDH.Public))
+	s.secrets[clientDH.Id] = MarshalPoint(shared)
+	*serverPub = MarshalPoint(pub)
+	return nil
 }
 
 
-func (s *Server) serverLoop() {
-	for {
 
-	}
+/////////////////////////////////
+//Download
+////////////////////////////////
+
+func (s *Server) Masks() [][]byte {
+	return s.masks
 }
 
-
-
-func main() {
-
+func (s *Server) Secrets() [][]byte {
+	return s.secrets
 }
