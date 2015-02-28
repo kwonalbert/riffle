@@ -10,7 +10,7 @@ const NumServers = 2
 
 //sizes in bytes
 const HashSize = 160/8
-const BlockSize = 1024 //1KB for testing;
+const BlockSize = 32 //1KB for testing;
 //const BlockSize = 1024*1024 //1MB
 const SecretSize = 256/8
 
@@ -49,4 +49,10 @@ type ClientRegistration struct {
 	Addr            string
 	ServerId        int //the dedicated server
 	Id              int
+}
+
+type ClientBlock struct {
+	CId             int //client id for the block
+	SId             int //sending server's id
+	Block           Block
 }

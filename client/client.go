@@ -49,6 +49,13 @@ func NewClient(addr string, servers []string, myServer string) *Client {
 		rpcServers[i] = rpcServer
 	}
 
+	masks := make([][]byte, len(servers))
+	secrets := make([][]byte, len(servers))
+	for i := 0; i < len(servers); i++ {
+		masks[i] = make([]byte, SecretSize)
+		secrets[i] = make([]byte, SecretSize)
+	}
+
 
 	//id comes from servers
 	c := Client {
@@ -60,8 +67,8 @@ func NewClient(addr string, servers []string, myServer string) *Client {
 		g:              Suite,
 		rand:           Suite.Cipher(abstract.RandomKey),
 
-		masks:          make([][]byte, len(servers)),
-		secrets:        make([][]byte, len(servers)),
+		masks:          masks,
+		secrets:        secrets,
 	}
 
 	return &c
@@ -107,18 +114,18 @@ func (c *Client) ShareSecret() {
 
 func (c *Client) GetResponse(slot int) []byte {
 	//all but one server uses the prng technique
-	mask := make([]byte, SecretSize)
-	SetBit(slot, true, mask)
-	mask = Xors(c.masks)
+	finalMask := make([]byte, SecretSize)
+	SetBit(slot, true, finalMask)
+	mask := Xors(c.masks)
 	Xor(c.masks[c.myServer], mask)
-
+	Xor(finalMask, mask)
 
 	//one response includes all the secrets
 	response := make([]byte, BlockSize)
-	responseXor := Xors(c.secrets)
-	cMask = ClientMask {Mask: mask, Id: c.id}
+	secretsXor := Xors(c.secrets)
+	cMask := ClientMask {Mask: mask, Id: c.id}
 	c.rpcServers[c.myServer].Call("Server.GetResponse", cMask, &response)
-	Xor(responseXor, response)
+	Xor(secretsXor, response)
 
 	//TODO: call PRNG to update all secrets
 
@@ -158,4 +165,7 @@ func (c *Client) Masks() [][]byte {
 
 func (c *Client) Secrets() [][]byte {
 	return c.secrets
+}
+func (c *Client) RpcServers() []*rpc.Client {
+	return c.rpcServers
 }

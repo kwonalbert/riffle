@@ -2,6 +2,7 @@ package afs
 
 import (
 	"fmt"
+	"log"
 
 	"testing"
 
@@ -59,30 +60,63 @@ func compareSecrets(smasks [][]byte, cmasks [][]byte) {
 	}
 }
 
-func TestShareSecret(t *testing.T) {
+// func TestShareSecret(t *testing.T) {
+// 	numS := NumServers
+// 	numC := NumClients
+// 	servers, clients := setup(numS, numC)
+
+// 	for _, c := range clients {
+// 		c.ShareSecret()
+// 	}
+
+// 	for i, s := range servers {
+// 		masks := s.Masks()
+// 		secrets := s.Secrets()
+// 		cmasks := make([][]byte, numC)
+// 		csecrets := make([][]byte, numC)
+// 		for j, c := range clients {
+// 			cmasks[j] = c.Masks()[i]
+// 			csecrets[j] = c.Secrets()[i]
+// 		}
+// 		compareSecrets(masks, cmasks)
+// 		compareSecrets(secrets, csecrets)
+// 	}
+// }
+
+func TestPIR(t *testing.T) {
 	numS := NumServers
 	numC := NumClients
-
-	servers, clients := setup(numS, numC)
+	_, clients := setup(numS, numC)
 
 	for _, c := range clients {
 		c.ShareSecret()
 	}
 
-	for i, s := range servers {
-		masks := s.Masks()
-		secrets := s.Secrets()
-		cmasks := make([][]byte, numC)
-		csecrets := make([][]byte, numC)
-		for j, c := range clients {
-			cmasks[j] = c.Masks()[i]
-			csecrets[j] = c.Secrets()[i]
+	//create test data
+	testData := make([]Block, numC)
+	for i := 0; i < numC; i++ {
+		data := make([]byte, BlockSize)
+		data[i] = 1
+		testData[i] = Block {
+			Hash: nil,
+			Block: data,
+			Round: 0,
 		}
-		compareSecrets(masks, cmasks)
-		compareSecrets(secrets, csecrets)
 	}
-}
 
-func TestPIR(t *testing.T) {
+	rpcServers := clients[0].RpcServers()
+	//put some blocks in server for testing
+	for _, rpcServer := range rpcServers {
+		err := rpcServer.Call("Server.PutUploadedBlocks", testData, nil)
+		if err != nil {
+			log.Fatal("Couldn't share uploaded blocks", err)
+		}
+	}
+
+	//do pir from client
+	for i, c := range clients {
+		res := c.GetResponse(i)
+		fmt.Println(res)
+	}
 
 }

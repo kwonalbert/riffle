@@ -16,8 +16,10 @@ func SetBit(n_int int, b bool, bs []byte) {
 }
 
 func Xor(r []byte, w []byte) {
-	for i, b := range r {
-		w[i] ^= b
+	for j := 0; j < len(w)/len(r); j+=len(r) {
+		for i, b := range r {
+			w[i] ^= b
+		}
 	}
 }
 

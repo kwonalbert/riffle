@@ -15,12 +15,6 @@ import (
 	"github.com/dedis/crypto/cipher"
 )
 
-type clientBlock struct {
-	cid             int //client id for the block
-	sid             int //sending server's id
-	block           Block
-}
-
 type Server struct {
 	addr            string //this server
 	id              int
@@ -57,6 +51,7 @@ type Server struct {
 func NewServer(addr string, id int, servers []string) *Server {
 	s := Server{
 		addr:           addr,
+		id:             id,
 		servers:        servers,
 		regLock:        []*sync.Mutex{new(sync.Mutex), new(sync.Mutex)},
 
@@ -91,9 +86,11 @@ func (s *Server) MainLoop() {
 	}
 	go rpcServer.Accept(l)
 
-	for {
-		go s.handleResponse()
-	}
+	go func () {
+		for {
+			s.handleResponse()
+		}
+	} ()
 }
 
 func (s *Server) ConnectServers() {
@@ -117,10 +114,10 @@ func (s *Server) handleResponse() {
 		//if it doesnt belong to me, xor things and send it over
 		go func(i int, sid int) {
 			res := ComputeResponse(allBlocks, s.masks[i], s.secrets[i])
-			cb := clientBlock {
-				cid: i,
-				sid: s.id,
-				block: Block {
+			cb := ClientBlock {
+				CId: i,
+				SId: s.id,
+				Block: Block {
 					Hash: nil,
 					Block: res,
 					Round: 0,
@@ -128,7 +125,7 @@ func (s *Server) handleResponse() {
 			}
 			err := s.rpcServers[sid].Call("Server.PutClientBlock", cb, nil)
 			if err != nil {
-				log.Fatal("Couldn't register: ", err)
+				log.Fatal("Couldn't put block: ", err)
 			}
 		} (i, s.clientMap[i])
 	}
@@ -180,12 +177,19 @@ func (s *Server) RegisterDone() {
 func (s *Server) RegisterDone2(numClients int, _ *int) error {
 	s.totalClients = numClients
 	for i := 0; i < len(s.servers); i++ {
+		s.xorsChan[i] = make(map[int](chan Block))
 		for j := 0; j < numClients; j++ {
-			s.xorsChan[i][j] = make(chan Block)
+			s.xorsChan[i][j] = make(chan Block, 3)
 		}
 	}
 	s.masks = make([][]byte, numClients)
 	s.secrets = make([][]byte, numClients)
+
+	for i := 0; i < numClients; i++ {
+		s.masks[i] = make([]byte, SecretSize)
+		s.secrets[i] = make([]byte, SecretSize)
+	}
+
 	return nil
 }
 
@@ -219,18 +223,25 @@ func (s *Server) ShareSecret(clientDH ClientDH, serverPub *[]byte) error {
 ////////////////////////////////
 
 func (s *Server) GetResponse(cmask ClientMask, response *[]byte) error {
-	allBlocks := make([]Block, len(s.servers))
-	for i := range allBlocks {
-		allBlocks[i] = <-s.xorsChan[i][cmask.Id]
+	otherBlocks := make([][]byte, len(s.servers))
+	for i := range otherBlocks {
+		if i == s.id {
+			otherBlocks[i] = make([]byte, BlockSize)
+		} else {
+			curBlock := <-s.xorsChan[i][cmask.Id]
+			otherBlocks[i] = curBlock.Block
+		}
 	}
-	r := ComputeResponse(allBlocks, cmask.Mask, s.secrets[cmask.Id])
+	r := ComputeResponse(s.allBlocks, cmask.Mask, s.secrets[cmask.Id])
+	Xor(Xors(otherBlocks), r)
 	*response = r
 	return nil
 }
 
 //used to push response for particular client
-func (s *Server) PutClientBlock(cBlock clientBlock, _ *int) error {
-	s.xorsChan[cBlock.sid][cBlock.cid] <- cBlock.block
+func (s *Server) PutClientBlock(cBlock ClientBlock, _ *int) error {
+	block := cBlock.Block
+	s.xorsChan[cBlock.SId][cBlock.CId] <- block
 	return nil
 }
 
@@ -239,8 +250,6 @@ func (s *Server) PutUploadedBlocks(blocks []Block, _ *int) error {
 	s.blocksChan <- blocks
 	return nil
 }
-
-
 
 
 /////////////////////////////////
