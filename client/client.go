@@ -116,7 +116,8 @@ func (c *Client) GetResponse(slot int) []byte {
 	//one response includes all the secrets
 	response := make([]byte, BlockSize)
 	responseXor := Xors(c.secrets)
-	c.rpcServers[c.myServer].Call("Server.GetResponse", mask, &response)
+	cMask = ClientMask {Mask: mask, Id: c.id}
+	c.rpcServers[c.myServer].Call("Server.GetResponse", cMask, &response)
 	Xor(responseXor, response)
 
 	//TODO: call PRNG to update all secrets
@@ -127,7 +128,8 @@ func (c *Client) GetResponse(slot int) []byte {
 func (c *Client) Register(server string) {
 	cr := ClientRegistration {
 		Addr: c.addr,
-		Server: c.servers[c.myServer],
+		ServerId: c.myServer,
+		Id: c.id,
 	}
 	var id int
 	s, err := rpc.Dial("tcp", server)

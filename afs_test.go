@@ -2,8 +2,6 @@ package afs
 
 import (
 	"fmt"
-	"net"
-	"net/rpc"
 
 	"testing"
 
@@ -11,8 +9,6 @@ import (
 	. "afs/client"
 	. "afs/lib"
 )
-
-var rpcServers []*rpc.Server
 
 func setup(numServers int, numClients int) ([]*Server, []*Client) {
 	fmt.Println(fmt.Sprintf("Setting up for %d servers and %d clients", numServers, numClients))
@@ -29,18 +25,14 @@ func setup(numServers int, numClients int) ([]*Server, []*Client) {
 	clients := make([]*Client, numClients)
 
 	fmt.Println("Starting servers")
-	rpcServers := make([]*rpc.Server, numServers)
 	for i := range ss {
-		s := NewServer(ss[i], ss)
+		s := NewServer(ss[i], i, ss)
 		servers[i] = s
-		rpcServer := rpc.NewServer()
-		rpcServer.Register(s)
-		l, err := net.Listen("tcp", ss[i])
-		if err != nil {
-			panic("Cannot starting listening to the port")
-		}
-		rpcServers[i] = rpcServer
-		go rpcServer.Accept(l)
+		s.MainLoop()
+	}
+
+	for _, s := range servers {
+		s.ConnectServers()
 	}
 
 	fmt.Println("Registering Clients")

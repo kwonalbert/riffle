@@ -41,6 +41,27 @@ func AllZero(xs []byte) bool {
 	return true
 }
 
+func ComputeResponse(allBlocks []Block, mask []byte, secret []byte) []byte {
+	response := make([]byte, BlockSize)
+        i := 0
+L:
+        for _, b := range mask {
+                for j := 0; j < 8; j++ {
+                        if b&1 == 1 {
+                                Xor(allBlocks[i].Block, response)
+                        }
+                        b >>= 1
+                        i++
+                        if i >= len(allBlocks) {
+                                break L
+                        }
+                }
+        }
+	Xor(secret, response)
+        return response
+}
+
+
 func MarshalPoint(pt abstract.Point) []byte {
 	buf := new(bytes.Buffer)
 	ptByte := make([]byte, SecretSize)

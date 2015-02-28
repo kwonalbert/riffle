@@ -40,7 +40,13 @@ type ClientDH struct {
 	Id              int
 }
 
+type ClientMask struct {
+	Mask            []byte
+	Id              int
+}
+
 type ClientRegistration struct {
 	Addr            string
-	Server          string //server client is connected to
+	ServerId        int //the dedicated server
+	Id              int
 }
