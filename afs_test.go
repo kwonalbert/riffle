@@ -1,6 +1,7 @@
 package afs
 
 import (
+	"crypto/rand"
 	"fmt"
 	"log"
 
@@ -96,7 +97,7 @@ func TestPIR(t *testing.T) {
 	testData := make([]Block, numC)
 	for i := 0; i < numC; i++ {
 		data := make([]byte, BlockSize)
-		data[i] = 1
+		rand.Read(data)
 		testData[i] = Block {
 			Hash: nil,
 			Block: data,
@@ -116,7 +117,11 @@ func TestPIR(t *testing.T) {
 	//do pir from client
 	for i, c := range clients {
 		res := c.GetResponse(i)
-		fmt.Println(res)
+		for j := range res {
+			if res[j] != testData[i].Block[j] {
+				panic("PIR failed!")
+			}
+		}
 	}
 
 }
