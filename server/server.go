@@ -184,10 +184,8 @@ func (s *Server) shuffleUploads() {
 	allUploads := <- s.uploadsChan
 	//shuffle and reblind
 
-	numChunks := BlockSize/SecretSize
-	if numChunks == 0 {
-		numChunks = 1
-	}
+	numChunks := len(allUploads[0].C1)
+
 	Xs := make([][]abstract.Point, numChunks)
 	Ys := make([][]abstract.Point, numChunks)
 
@@ -257,7 +255,11 @@ func (s *Server) shuffleUploads() {
 		for i := range blocks {
 			block := []byte{}
 			for j := range decs {
-				block = append(block, MarshalPoint(decs[i][j])...)
+				msg, err := decs[i][j].Data()
+				if err != nil {
+					log.Fatal("Could not decrypt: ", err)
+				}
+				block = append(block, msg...)
 			}
 			blocks[i] = Block {
 				Hash: nil,

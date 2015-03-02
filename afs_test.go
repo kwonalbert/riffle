@@ -125,7 +125,7 @@ func TestPIR(t *testing.T) {
 
 	//do pir from client
 	for i, c := range clients {
-		res := c.GetResponse(i)
+		res := c.DownloadSlot(i)
 		for j := range res {
 			if res[j] != testData[i].Block[j] {
 				panic("PIR failed!")

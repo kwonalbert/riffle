@@ -11,10 +11,8 @@ import (
 
 	. "afs/lib" //types and utils
 
-	//"github.com/dedis/crypto"
 	"github.com/dedis/crypto/abstract"
 	"github.com/dedis/crypto/cipher"
-	//"github.com/dedis/crypto/random"
 )
 
 //assumes RPC model of communication
@@ -148,13 +146,30 @@ func (c *Client) ShareSecret() {
 /////////////////////////////////
 //Upload
 ////////////////////////////////
+func (c *Client) UploadBlock(block Block) {
+	c1s, c2s := Encrypt(c.g, block.Block, c.pks)
+	upblock := UpBlock {
+		C1: make([][]byte, len(c1s)),
+		C2: make([][]byte, len(c2s)),
+		Round: 0,
+	}
+	for i := range c1s {
+		upblock.C1[i] = MarshalPoint(c1s[i])
+		upblock.C2[i] = MarshalPoint(c2s[i])
+	}
+
+	err := c.rpcServers[c.myServer].Call("Server.UploadBlock", &upblock, nil)
+	if err != nil {
+		log.Fatal("Couldn't uploda a block: ", err)
+	}
+}
 
 
 /////////////////////////////////
 //Download
 ////////////////////////////////
 
-func (c *Client) GetResponse(slot int) []byte {
+func (c *Client) DownloadSlot(slot int) []byte {
 	//all but one server uses the prng technique
 	finalMask := make([]byte, SecretSize)
 	SetBit(slot, true, finalMask)

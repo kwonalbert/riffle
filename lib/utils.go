@@ -4,6 +4,7 @@ import (
 	"bytes"
 
 	"github.com/dedis/crypto/abstract"
+	"github.com/dedis/crypto/random"
 )
 
 func SetBit(n_int int, b bool, bs []byte) {
@@ -61,6 +62,29 @@ L:
         }
 	Xor(secret, response)
         return response
+}
+
+func Encrypt(g abstract.Group, msg []byte, pks []abstract.Point) ([]abstract.Point, []abstract.Point) {
+	msgPt, remainder := g.Point().Pick(msg, random.Stream)
+	c1s := []abstract.Point{}
+	c2s := []abstract.Point{}
+	for ; len(remainder) != 0 ;  {
+		k := g.Secret().Pick(random.Stream)
+		c1 := g.Point().Mul(nil, k)
+		var c2 abstract.Point = nil
+		for _, pk := range pks {
+			if c2 == nil {
+				c2 = g.Point().Mul(pk, k)
+			} else {
+				c2 = g.Point().Add(c2, g.Point().Mul(pk, k))
+			}
+		}
+		c2 = g.Point().Add(c2, msgPt) //c2.Add?
+		c1s = append(c1s, c1)
+		c2s = append(c2s, c2)
+		msgPt, remainder = g.Point().Pick(remainder, random.Stream)
+	}
+	return c1s, c2s
 }
 
 
