@@ -64,6 +64,10 @@ L:
 }
 
 
+func Decrypt(g abstract.Group, c1 abstract.Point, c2 abstract.Point, sk abstract.Secret) abstract.Point {
+	return g.Point().Sub(c2, g.Point().Mul(c1, sk))
+}
+
 func MarshalPoint(pt abstract.Point) []byte {
 	buf := new(bytes.Buffer)
 	ptByte := make([]byte, SecretSize)

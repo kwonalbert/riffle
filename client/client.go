@@ -73,6 +73,27 @@ func NewClient(addr string, servers []string, myServer string) *Client {
 
 	return &c
 }
+/////////////////////////////////
+//Registration and Setup
+////////////////////////////////
+
+func (c *Client) Register(server string) {
+	cr := ClientRegistration {
+		Addr: c.addr,
+		ServerId: c.myServer,
+		Id: c.id,
+	}
+	var id int
+	s, err := rpc.Dial("tcp", server)
+	if err != nil {
+		log.Fatal("Couldn't connect to a server: ", err)
+	}
+	err = s.Call("Server.Register", cr, &id)
+	if err != nil {
+		log.Fatal("Couldn't register: ", err)
+	}
+	c.id = id
+}
 
 //share one time secret with the server
 func (c *Client) ShareSecret() {
@@ -101,8 +122,8 @@ func (c *Client) ShareSecret() {
 
 			servPub1 := make([]byte, SecretSize)
 			servPub2 := make([]byte, SecretSize)
-			call1 := rpcServer.Go("Server.ShareMask", cs1, &servPub1, nil)
-			call2 := rpcServer.Go("Server.ShareSecret", cs2, &servPub2, nil)
+			call1 := rpcServer.Go("Server.ShareMask", &cs1, &servPub1, nil)
+			call2 := rpcServer.Go("Server.ShareSecret", &cs2, &servPub2, nil)
 			_ = <-call1.Done
 			_ = <-call2.Done
 			c.masks[i] = MarshalPoint(c.g.Point().Mul(UnmarshalPoint(servPub1), secret1))
@@ -111,6 +132,15 @@ func (c *Client) ShareSecret() {
 	}
 	wg.Wait()
 }
+
+/////////////////////////////////
+//Upload
+////////////////////////////////
+
+
+/////////////////////////////////
+//Download
+////////////////////////////////
 
 func (c *Client) GetResponse(slot int) []byte {
 	//all but one server uses the prng technique
@@ -131,25 +161,6 @@ func (c *Client) GetResponse(slot int) []byte {
 
 	return response
 }
-
-func (c *Client) Register(server string) {
-	cr := ClientRegistration {
-		Addr: c.addr,
-		ServerId: c.myServer,
-		Id: c.id,
-	}
-	var id int
-	s, err := rpc.Dial("tcp", server)
-	if err != nil {
-		log.Fatal("Couldn't connect to a server: ", err)
-	}
-	err = s.Call("Server.Register", cr, &id)
-	if err != nil {
-		log.Fatal("Couldn't register: ", err)
-	}
-	c.id = id
-}
-
 
 /////////////////////////////////
 //Misc (mostly for testing)

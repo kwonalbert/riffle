@@ -13,8 +13,12 @@ import (
 
 	"github.com/dedis/crypto/abstract"
 	"github.com/dedis/crypto/cipher"
+	"github.com/dedis/crypto/proof"
+	"github.com/dedis/crypto/random"
+	"github.com/dedis/crypto/shuffle"
 )
 
+//any variable/func with 2: similar object as s-c but only s-s
 type Server struct {
 	addr            string //this server
 	id              int
@@ -24,6 +28,9 @@ type Server struct {
 	//crypto
 	g               abstract.Group
 	rand            cipher.Stream
+	sk              abstract.Secret //secret and public elgamal key
+	pk              abstract.Point
+	pks             []abstract.Point //all servers pks
 
 	allBlocks       []Block //all blocks store on this server
 
@@ -33,14 +40,18 @@ type Server struct {
 	numClients      int //#clients connect here
 	totalClients    int //total number of clients (sum of all servers)
 
+	//uploading
+	ublockChan      chan UpBlock
+	ublockChan2     chan UpBlock
+	uploadsChan     chan []UpBlock //collect all uploads together
+
 	//downloading
-	blocksChan      chan []Block
-	blocks          map[int][]Block //only keep track of relevant blocks
+	dblocksChan     chan []Block
+	blocks          map[int][]Block //keep track of blocks mapped to this server
 	xorsChan        []map[int](chan Block)
 	maskChan        chan []byte
 	masks           [][]byte //clients' masks for PIR
 	secrets         [][]byte //shared secret used to xor
-	otherResps      [][]byte //other servers responding to this
 }
 
 
@@ -49,6 +60,10 @@ type Server struct {
 //////////////////////////////
 
 func NewServer(addr string, id int, servers []string) *Server {
+	rand := Suite.Cipher(abstract.RandomKey)
+	sk := Suite.Secret().Pick(rand)
+	pk := Suite.Point().Mul(nil, sk)
+
 	s := Server{
 		addr:           addr,
 		id:             id,
@@ -56,14 +71,20 @@ func NewServer(addr string, id int, servers []string) *Server {
 		regLock:        []*sync.Mutex{new(sync.Mutex), new(sync.Mutex)},
 
 		g:              Suite,
-		rand:           Suite.Cipher(abstract.RandomKey),
+		rand:           rand,
+		sk:             sk,
+		pk:             pk,
+		pks:            make([]abstract.Point, len(servers)),
 
 		clients:        []string{},
 		clientMap:      make(map[int]int),
 		numClients:     0,
 		totalClients:   0,
 
-		blocksChan:     make(chan []Block),
+		ublockChan:     make(chan UpBlock),
+		ublockChan2:    make(chan UpBlock),
+
+		dblocksChan:    make(chan []Block),
 		blocks:         make(map[int][]Block),
 		xorsChan:       make([]map[int](chan Block), len(servers)),
 		masks:          nil,
@@ -102,11 +123,12 @@ func (s *Server) ConnectServers() {
 		}
 		rpcServers[i] = rpcServer
 	}
+	//TODO: get all pks
 	s.rpcServers = rpcServers
 }
 
 func (s *Server) handleResponse() {
-	allBlocks := <-s.blocksChan
+	allBlocks := <-s.dblocksChan
 	for i := 0; i < s.totalClients; i++ {
 		if s.clientMap[i] == s.id {
 			continue
@@ -133,7 +155,132 @@ func (s *Server) handleResponse() {
 	s.allBlocks = allBlocks
 }
 
+func (s *Server) handleUpload() {
+	upBlock := <-s.ublockChan
+	err := s.rpcServers[0].Call("Server.UploadBlock2", upBlock, nil)
+	if err != nil {
+		log.Fatal("Couldn't send block to first server: ", err)
+	}
+}
 
+func (s *Server) gatherUploads() {
+	allUploads := make([]UpBlock, s.totalClients)
+	for i := 0; i < s.totalClients; i++ {
+		allUploads[i] = <-s.ublockChan2
+	}
+	s.uploadsChan <- allUploads
+}
+
+func (s *Server) shuffleUploads() {
+	allUploads := <- s.uploadsChan
+	//shuffle and reblind
+
+	numChunks := BlockSize/SecretSize
+	if numChunks == 0 {
+		numChunks = 1
+	}
+	Xs := make([][]abstract.Point, numChunks)
+	Ys := make([][]abstract.Point, numChunks)
+
+	for i := range allUploads {
+		Xs[i] = make([]abstract.Point, s.totalClients)
+		Ys[i] = make([]abstract.Point, s.totalClients)
+		for j := 0; j < s.totalClients; j++ {
+			Xs[i][j] = UnmarshalPoint(allUploads[i].C1[j])
+			Ys[i][j] = UnmarshalPoint(allUploads[i].C2[j])
+		}
+	}
+
+	// Pick a random permutation
+	pi := make([]int, s.totalClients)
+	for i := 0; i < s.totalClients; i++ {	// Initialize a trivial permutation
+		pi[i] = i
+	}
+	for i := s.totalClients-1; i > 0; i-- {	// Shuffle by random swaps
+		j := int(random.Uint64(s.rand) % uint64(i+1))
+		if j != i {
+			t := pi[j]
+			pi[j] = pi[i]
+			pi[i] = t
+		}
+	}
+
+	Xbars := make([][]abstract.Point, numChunks)
+	Ybars := make([][]abstract.Point, numChunks)
+	decs := make([][]abstract.Point, numChunks)
+	provers := make([] proof.Prover, numChunks)
+
+	//do the shuffle, and blind using next server's keys
+	//everyone shares the same group
+	var wg sync.WaitGroup
+	for i := range decs {
+		decs[i] = make([]abstract.Point, s.totalClients)
+		wg.Add(1)
+		go func (i int) {
+			defer wg.Done()
+			pk := s.pks[s.id+1]
+			if s.id == len(s.servers)-1 {
+				pk = s.pk
+			}
+			Xbars[i], Ybars[i], provers[i] = shuffle.Shuffle2(pi, s.g, nil, pk, Xs[i], Ys[i], s.rand)
+			//decrypt a layer
+			var decWG sync.WaitGroup
+			for j := 0; j < s.totalClients; j++ {
+				decWG.Add(1)
+				go func (j int) {
+					defer decWG.Done()
+					c1 := Xs[i][j]
+					if s.id == len(s.servers)-1 {
+						c1 = Xbars[i][j]
+					}
+					c2 := Ybars[i][j]
+					decs[i][j] = Decrypt(s.g, c1, c2, s.sk)
+				} (j)
+			}
+			decWG.Wait()
+		} (i)
+	}
+	wg.Wait()
+
+	if s.id == len(s.servers) - 1 {
+		//last server to shuffle, then broadcast
+		blocks := make([]Block, s.totalClients)
+		for i := range blocks {
+			block := []byte{}
+			for j := range decs {
+				block = append(block, MarshalPoint(decs[i][j])...)
+			}
+			blocks[i] = Block {
+				Hash: nil,
+				Block: block,
+				Round: 0,
+			}
+		}
+
+		for _, rpcServer := range s.rpcServers {
+			wg.Add(1)
+			go func(rpcServer *rpc.Client) {
+				defer wg.Done()
+				err := rpcServer.Call("Server.PutUploadedBlocks", blocks, nil)
+				if err != nil {
+					log.Fatal("Failed uploading shuffled and decoded blocks: ", err)
+				}
+			} (rpcServer)
+		}
+		wg.Wait()
+	} else {
+		for i := range allUploads {
+			for j := range allUploads[i].C1 {
+				allUploads[i].C1[j] = MarshalPoint(Xbars[i][j])
+				allUploads[i].C2[j] = MarshalPoint(Ybars[i][j])
+			}
+		}
+		err := s.rpcServers[s.id+1].Call("Server.ShuffleBlocks", allUploads, nil)
+		if err != nil {
+			log.Fatal("Failed requesting shuffle: ", err)
+		}
+	}
+}
 
 /////////////////////////////////
 //Registration
@@ -141,7 +288,7 @@ func (s *Server) handleResponse() {
 
 //register the client here, and notify the server it will be talking to
 //TODO: should check for duplicate clients, just in case..
-func (s *Server) Register(client ClientRegistration, clientId *int) error {
+func (s *Server) Register(client *ClientRegistration, clientId *int) error {
 	s.regLock[0].Lock()
 	*clientId = s.totalClients
 	s.totalClients++
@@ -156,7 +303,7 @@ func (s *Server) Register(client ClientRegistration, clientId *int) error {
 }
 
 //called to increment total number of clients
-func (s *Server) Register2(client ClientRegistration, _ *int) error {
+func (s *Server) Register2(client *ClientRegistration, _ *int) error {
 	s.regLock[1].Lock()
 	s.clients = append(s.clients, client.Addr)
 	s.clientMap[client.Id] = client.ServerId
@@ -202,20 +349,37 @@ func (s *Server) shareSecret(clientPublic abstract.Point) (abstract.Point, abstr
 	return public, sharedSecret
 }
 
-func (s *Server) ShareMask(clientDH ClientDH, serverPub *[]byte) error {
+func (s *Server) ShareMask(clientDH *ClientDH, serverPub *[]byte) error {
 	pub, shared := s.shareSecret(UnmarshalPoint(clientDH.Public))
 	s.masks[clientDH.Id] = MarshalPoint(shared)
 	*serverPub = MarshalPoint(pub)
 	return nil
 }
 
-func (s *Server) ShareSecret(clientDH ClientDH, serverPub *[]byte) error {
+func (s *Server) ShareSecret(clientDH *ClientDH, serverPub *[]byte) error {
 	pub, shared := s.shareSecret(UnmarshalPoint(clientDH.Public))
 	s.secrets[clientDH.Id] = MarshalPoint(shared)
 	*serverPub = MarshalPoint(pub)
 	return nil
 }
 
+/////////////////////////////////
+//Upload
+////////////////////////////////
+func (s *Server) UploadBlock(block *UpBlock, _ *int) error {
+	s.ublockChan <- *block
+	return nil
+}
+
+func (s *Server) UploadBlock2(block *UpBlock, _*int) error {
+	s.ublockChan2 <- *block
+	return nil
+}
+
+func (s *Server) ShuffleBlocks(blocks *[]UpBlock, _*int) error {
+	s.uploadsChan <- *blocks
+	return nil
+}
 
 
 /////////////////////////////////
@@ -239,15 +403,15 @@ func (s *Server) GetResponse(cmask ClientMask, response *[]byte) error {
 }
 
 //used to push response for particular client
-func (s *Server) PutClientBlock(cBlock ClientBlock, _ *int) error {
-	block := cBlock.Block
-	s.xorsChan[cBlock.SId][cBlock.CId] <- block
+func (s *Server) PutClientBlock(cblock ClientBlock, _ *int) error {
+	block := cblock.Block
+	s.xorsChan[cblock.SId][cblock.CId] <- block
 	return nil
 }
 
 //used to push the uploaded blocks from the final shuffle server
 func (s *Server) PutUploadedBlocks(blocks []Block, _ *int) error {
-	s.blocksChan <- blocks
+	s.dblocksChan <- blocks
 	return nil
 }
 

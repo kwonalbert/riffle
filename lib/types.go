@@ -26,6 +26,21 @@ type Block struct {
 	Round           int
 }
 
+//encrypted version of the block
+//first version elgamals everything
+type UpBlock struct {
+	C1              [][]byte
+	C2              [][]byte
+	Round           int
+}
+
+// //second version elgamals only hashs
+// type UpBlock struct {
+// 	Hash            []ElGamal
+// 	Block           [][]byte //broken into AES sized chunks
+// 	Round           int
+// }
+
 type Request struct {
 	Hash            []byte
 	Round           int
