@@ -29,6 +29,7 @@ type Client struct {
 	//crypto
 	g              abstract.Group
 	rand           cipher.Stream
+	pks            []abstract.Point //server public keys
 
 	//downloading
 	masks          [][]byte //masks used
@@ -49,6 +50,16 @@ func NewClient(addr string, servers []string, myServer string) *Client {
 		rpcServers[i] = rpcServer
 	}
 
+	pks := make([]abstract.Point, len(servers))
+	for i, rpcServer := range rpcServers {
+		pk := make([]byte, SecretSize)
+		err := rpcServer.Call("Server.GetPK", 0, &pk)
+		if err != nil {
+			log.Fatal("Couldn't get server's pk: ", err)
+		}
+		pks[i] = UnmarshalPoint(pk)
+	}
+
 	masks := make([][]byte, len(servers))
 	secrets := make([][]byte, len(servers))
 	for i := 0; i < len(servers); i++ {
@@ -66,6 +77,7 @@ func NewClient(addr string, servers []string, myServer string) *Client {
 
 		g:              Suite,
 		rand:           Suite.Cipher(abstract.RandomKey),
+		pks:            pks,
 
 		masks:          masks,
 		secrets:        secrets,

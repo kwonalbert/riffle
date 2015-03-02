@@ -12,6 +12,9 @@ import (
 	. "afs/lib"
 )
 
+var servers []*Server = nil
+var clients []*Client = nil
+
 func setup(numServers int, numClients int) ([]*Server, []*Client) {
 	fmt.Println(fmt.Sprintf("Setting up for %d servers and %d clients", numServers, numClients))
 	ss := make([]string, numServers)
@@ -61,33 +64,39 @@ func compareSecrets(smasks [][]byte, cmasks [][]byte) {
 	}
 }
 
-// func TestShareSecret(t *testing.T) {
-// 	numS := NumServers
-// 	numC := NumClients
-// 	servers, clients := setup(numS, numC)
+func TestShareSecret(t *testing.T) {
+	numS := NumServers
+	numC := NumClients
 
-// 	for _, c := range clients {
-// 		c.ShareSecret()
-// 	}
+	if servers == nil {
+		servers, clients = setup(numS, numC)
+	}
 
-// 	for i, s := range servers {
-// 		masks := s.Masks()
-// 		secrets := s.Secrets()
-// 		cmasks := make([][]byte, numC)
-// 		csecrets := make([][]byte, numC)
-// 		for j, c := range clients {
-// 			cmasks[j] = c.Masks()[i]
-// 			csecrets[j] = c.Secrets()[i]
-// 		}
-// 		compareSecrets(masks, cmasks)
-// 		compareSecrets(secrets, csecrets)
-// 	}
-// }
+	for _, c := range clients {
+		c.ShareSecret()
+	}
+
+	for i, s := range servers {
+		masks := s.Masks()
+		secrets := s.Secrets()
+		cmasks := make([][]byte, numC)
+		csecrets := make([][]byte, numC)
+		for j, c := range clients {
+			cmasks[j] = c.Masks()[i]
+			csecrets[j] = c.Secrets()[i]
+		}
+		compareSecrets(masks, cmasks)
+		compareSecrets(secrets, csecrets)
+	}
+}
 
 func TestPIR(t *testing.T) {
 	numS := NumServers
 	numC := NumClients
-	_, clients := setup(numS, numC)
+
+	if servers == nil {
+		_, clients = setup(numS, numC)
+	}
 
 	for _, c := range clients {
 		c.ShareSecret()

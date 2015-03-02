@@ -123,7 +123,16 @@ func (s *Server) ConnectServers() {
 		}
 		rpcServers[i] = rpcServer
 	}
-	//TODO: get all pks
+	for i, rpcServer := range rpcServers {
+		go func (i int, rpcServer *rpc.Client) {
+			pk := make([]byte, SecretSize)
+			err := rpcServer.Call("Server.GetPK", 0, &pk)
+			if err != nil {
+				log.Fatal("Couldn't get server's pk: ", err)
+			}
+			s.pks[i] = UnmarshalPoint(pk)
+		} (i, rpcServer)
+	}
 	s.rpcServers = rpcServers
 }
 
@@ -340,7 +349,11 @@ func (s *Server) RegisterDone2(numClients int, _ *int) error {
 	return nil
 }
 
-//DH exchange
+func (s *Server) GetPK(_ int, pk *[]byte) error {
+	*pk = MarshalPoint(s.pk)
+	return nil
+}
+
 func (s *Server) shareSecret(clientPublic abstract.Point) (abstract.Point, abstract.Point) {
 	gen := s.g.Point().Base()
 	secret := s.g.Secret().Pick(s.rand)
