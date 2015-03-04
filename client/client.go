@@ -87,18 +87,14 @@ func NewClient(addr string, servers []string, myServer string) *Client {
 //Registration and Setup
 ////////////////////////////////
 
-func (c *Client) Register(server string) {
+func (c *Client) Register(idx int) {
 	cr := ClientRegistration {
 		Addr: c.addr,
 		ServerId: c.myServer,
 		Id: c.id,
 	}
 	var id int
-	s, err := rpc.Dial("tcp", server)
-	if err != nil {
-		log.Fatal("Couldn't connect to a server: ", err)
-	}
-	err = s.Call("Server.Register", cr, &id)
+	err := c.rpcServers[idx].Call("Server.Register", cr, &id)
 	if err != nil {
 		log.Fatal("Couldn't register: ", err)
 	}
@@ -151,8 +147,10 @@ func (c *Client) UploadBlock(block Block) {
 	upblock := UpBlock {
 		C1: make([][]byte, len(c1s)),
 		C2: make([][]byte, len(c2s)),
+
 		Round: 0,
 	}
+
 	for i := range c1s {
 		upblock.C1[i] = MarshalPoint(c1s[i])
 		upblock.C2[i] = MarshalPoint(c2s[i])

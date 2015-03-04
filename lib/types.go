@@ -5,8 +5,8 @@ import (
 	"github.com/dedis/crypto/edwards"
 )
 
-const NumClients = 3
-const NumServers = 2
+const NumClients = 10
+const NumServers = 3
 
 //sizes in bytes
 const HashSize = 160/8
