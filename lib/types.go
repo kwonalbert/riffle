@@ -5,7 +5,7 @@ import (
 	"github.com/dedis/crypto/edwards"
 )
 
-const NumClients = 10
+const NumClients = 20
 const NumServers = 3
 
 //sizes in bytes

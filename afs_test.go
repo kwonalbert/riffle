@@ -1,10 +1,10 @@
 package afs
 
 import (
-	//"crypto/rand"
+	"crypto/rand"
 	"fmt"
-	//"net/rpc"
-	//"log"
+	"net/rpc"
+	"log"
 	"os"
 	"sync"
 
