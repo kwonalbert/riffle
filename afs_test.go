@@ -38,7 +38,7 @@ func setup(numServers int, numClients int) ([]*Server, []*Client) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			s := NewServer(ss[i], i, ss)
+			s := NewServer(ss[i], 8000+i, i, ss)
 			servers[i] = s
 			s.MainLoop()
 		}(i)
@@ -63,6 +63,15 @@ func setup(numServers int, numClients int) ([]*Server, []*Client) {
 			clients[i] = c
 			c.Register(0)
 		} (i)
+	}
+	wg.Wait()
+
+	for _, c := range clients {
+		wg.Add(1)
+		go func(c *Client) {
+			defer wg.Done()
+			c.RegisterDone()
+		} (c)
 	}
 	wg.Wait()
 
@@ -106,6 +115,41 @@ func TestShareSecret(t *testing.T) {
 	}
 }
 
+func TestRequest(t *testing.T) {
+	testData := make([][]byte, NumClients)
+	var wg sync.WaitGroup
+	for i, c := range clients {
+		wg.Add(1)
+		testData[i] = make([]byte, HashSize)
+		rand.Read(testData[i])
+		go func(i int, c *Client) {
+			defer wg.Done()
+			c.RequestBlock(i, testData[i])
+		} (i, c)
+	}
+	wg.Wait()
+
+	for _, c := range clients {
+		hashes := c.DownloadReqHash()
+		for i := range testData {
+			found := false
+			for j := range hashes {
+				same := true
+				for k := range hashes {
+					same = same && (hashes[j][k] == testData[i][k])
+				}
+				if same {
+					found = true
+					break
+				}
+			}
+			if !found {
+				panic("Didn't get all the hashes")
+			}
+		}
+	}
+}
+
 func TestPIR(t *testing.T) {
 	for _, c := range clients {
 		c.ShareSecret()
@@ -117,7 +161,6 @@ func TestPIR(t *testing.T) {
 		data := make([]byte, BlockSize)
 		rand.Read(data)
 		testData[i] = Block {
-			Hash: nil,
 			Block: data,
 			Round: 0,
 		}
@@ -146,37 +189,37 @@ func TestPIR(t *testing.T) {
 					panic("PIR failed!")
 				}
 			}
+			c.ClearHashes()
 		} (i, c)
 	}
 	wg.Wait()
 
 }
 
-func TestUpload(t *testing.T) {
+func TestUploadDownload(t *testing.T) {
 	//upload blocks
 	testData := make([][]byte, NumClients)
 	for i, c := range clients {
+		data := make([]byte, BlockSize)
+		//rand.Read(data)
+		data[i] = 1
+		testData[i] = data
 		go func(i int, c *Client) {
-			data := make([]byte, BlockSize)
-			rand.Read(data)
-			testData[i] = data
 			upblock := Block {
-				Hash: nil,
-				Block: data,
+				Block: testData[i],
 				Round: 0,
 			}
 			c.UploadBlock(upblock)
 		} (i, c)
 	}
 
-	//do pir from client
 	res := make([][]byte, NumClients)
 	var wg sync.WaitGroup
 	for i, c := range clients {
 		wg.Add(1)
 		go func(i int, c *Client) {
 			defer wg.Done()
-			res[i] = c.DownloadSlot(i)
+			res[i] = c.DownloadBlock(Suite.Hash().Sum(testData[i]))
 		} (i, c)
 	}
 	wg.Wait()

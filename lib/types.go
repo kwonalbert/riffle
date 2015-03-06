@@ -5,8 +5,8 @@ import (
 	"github.com/dedis/crypto/edwards"
 )
 
-const NumClients = 20
-const NumServers = 3
+const NumClients = 10
+const NumServers = 2
 
 //sizes in bytes
 const HashSize = 160/8
@@ -21,7 +21,6 @@ type File struct {
 }
 
 type Block struct {
-	Hash            []byte
 	Block           []byte
 	Round           int
 }
@@ -29,8 +28,10 @@ type Block struct {
 //encrypted version of the block
 //first version elgamals everything
 type UpBlock struct {
-	C1              [][]byte
-	C2              [][]byte
+	BC1             [][]byte
+	BC2             [][]byte
+	HC1             [][]byte
+	HC2             [][]byte
 	Round           int
 }
 
@@ -41,8 +42,14 @@ type UpBlock struct {
 // 	Round           int
 // }
 
+// type Request struct {
+// 	Hash            []byte
+// 	Round           int
+// }
+
+//Dissent model request
 type Request struct {
-	Hash            []byte
+	Hash            [][]byte
 	Round           int
 }
 
@@ -64,6 +71,11 @@ type ClientRegistration struct {
 	Addr            string
 	ServerId        int //the dedicated server
 	Id              int
+}
+
+type ClientRequest struct {
+	Request        Request
+	Id             int
 }
 
 type ClientBlock struct {
