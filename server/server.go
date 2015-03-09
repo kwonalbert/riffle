@@ -42,10 +42,6 @@ type Server struct {
 	masks           [][]byte //clients' masks for PIR
 	secrets         [][]byte //shared secret used to xor
 
-	reqRound        int
-	gatherRound     int
-	shuffleRound    int
-	downRound       int
 	rounds          []*Round
 }
 
@@ -126,10 +122,6 @@ func NewServer(addr string, port int, id int, servers []string) *Server {
 		masks:          nil,
 		secrets:        nil,
 
-		reqRound:       0,
-		gatherRound:    0,
-		shuffleRound:   0,
-		downRound:      0,
 		rounds:         rounds,
 	}
 
@@ -151,13 +143,7 @@ func (s *Server) MainLoop() {
 	go rpcServer.Accept(l)
 
 	RunFunc(s.handleRequests)
-	for r := 0; r < MaxRounds; r++ {
-		go func(r int){
-			for{
-				s.handleUpload(r)
-			}
-		} (r)
-	}
+	RunFunc(s.handleUpload)
 	RunFunc(s.gatherUploads)
 	RunFunc(s.shuffleUploads)
 	RunFunc(s.handleResponses)
@@ -206,12 +192,11 @@ func (s *Server) ConnectServers() {
 	s.rpcServers = rpcServers
 }
 
-func (s *Server) handleRequests() {
+func (s *Server) handleRequests(round int) {
 	if !s.regDone {
 		return
 	}
 
-	round := s.reqRound % MaxRounds
 	allRequests := make([][][]byte, s.totalClients)
 
 	var wg sync.WaitGroup
@@ -234,15 +219,13 @@ func (s *Server) handleRequests() {
 			s.rounds[round].reqHashesRdy[i] <- true
 		} (i, round)
 	}
-	s.reqRound++
 }
 
-func (s *Server) handleResponses() {
+func (s *Server) handleResponses(round int) {
 	if !s.regDone {
 		return
 	}
 
-	round := s.downRound % MaxRounds
 	allBlocks := <-s.rounds[round].dblocksChan
 	for i := 0; i < s.totalClients; i++ {
 		if s.clientMap[i] == s.id {
@@ -281,7 +264,6 @@ func (s *Server) handleResponses() {
 			s.rounds[round].blocksRdy[i] <- true
 		} (i, round)
 	}
-	s.downRound++
 }
 
 func (s *Server) handleUpload(round int) {
@@ -296,26 +278,23 @@ func (s *Server) handleUpload(round int) {
 	}
 }
 
-func (s *Server) gatherUploads() {
+func (s *Server) gatherUploads(round int) {
 	if !s.regDone {
 		return
 	}
 
-	round := s.gatherRound % MaxRounds
 	allUploads := make([]UpBlock, s.totalClients)
 	for i := 0; i < s.totalClients; i++ {
 		allUploads[i] = <-s.rounds[round].ublockChan2
 	}
 	s.rounds[round].shuffleChan <- allUploads
-	s.gatherRound++
 }
 
-func (s *Server) shuffleUploads() {
+func (s *Server) shuffleUploads(round int) {
 	if !s.regDone {
 		return
 	}
 
-	round := s.shuffleRound % MaxRounds
 	allUploads := <-s.rounds[round].shuffleChan
 	//shuffle and reblind
 
@@ -391,7 +370,6 @@ func (s *Server) shuffleUploads() {
 			log.Fatal("Failed requesting shuffle: ", err)
 		}
 	}
-	s.shuffleRound++
 }
 
 func (s *Server) shuffle(Xs [][]abstract.Point, Ys [][]abstract.Point, numChunks int) ([][]abstract.Point,

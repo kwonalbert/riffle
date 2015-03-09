@@ -140,10 +140,12 @@ func UnmarshalPoint(ptByte []byte) abstract.Point {
 	return pt
 }
 
-func RunFunc(f func()) {
-	go func () {
-		for {
-			f()
-		}
-	} ()
+func RunFunc(f func(int)) {
+	for r := 0; r < MaxRounds; r++ {
+		go func (r int) {
+			for {
+				f(r)
+			}
+		} (r)
+	}
 }
