@@ -3,8 +3,6 @@ package afs
 import (
 	"crypto/rand"
 	"fmt"
-	"net/rpc"
-	"log"
 	"os"
 	"sync"
 
@@ -17,98 +15,6 @@ import (
 
 var servers []*Server = nil
 var clients []*Client = nil
-
-func TestRequest(t *testing.T) {
-	testData := make([][]byte, NumClients)
-	var wg sync.WaitGroup
-	for i, c := range clients {
-		wg.Add(1)
-		testData[i] = make([]byte, HashSize)
-		rand.Read(testData[i])
-		go func(i int, c *Client) {
-			defer wg.Done()
-			c.RequestBlock(i, Suite.Hash().Sum(testData[i]))
-		} (i, c)
-	}
-	wg.Wait()
-
-	for _, c := range clients {
-		hashes := c.DownloadReqHash()
-		for i := range testData {
-			dataHash := Suite.Hash().Sum(testData[i])
-			found := false
-			for j := range hashes {
-				same := true
-				for k := range hashes {
-					same = same && (hashes[j][k] == dataHash[k])
-				}
-				if same {
-					found = true
-					break
-				}
-			}
-			if !found {
-				panic("Didn't get all the hashes")
-			}
-		}
-	}
-}
-
-func TestPIR(t *testing.T) {
-	//create test data
-	testData := make([]Block, NumClients)
-	for i := 0; i < NumClients; i++ {
-		data := make([]byte, BlockSize)
-		rand.Read(data)
-		testData[i] = Block {
-			Block: data,
-			Round: 0,
-		}
-	}
-
-	rpcServers := clients[0].RpcServers()
-	//put some blocks in server for testing
-	for _, rpcServer := range rpcServers {
-		go func(rpcServer *rpc.Client) {
-			err := rpcServer.Call("Server.PutUploadedBlocks", testData, nil)
-			if err != nil {
-				log.Fatal("Couldn't share uploaded blocks", err)
-			}
-		} (rpcServer)
-	}
-
-	//do pir from client
-	var wg sync.WaitGroup
-	for i, c := range clients {
-		wg.Add(1)
-		go func(i int, c *Client) {
-			defer wg.Done()
-			res := c.DownloadSlot(i)
-			if len(res) != BlockSize {
-				panic("PIR failed! None matching size")
-			}
-			for j := range res {
-				if res[j] != testData[i].Block[j] {
-					panic("PIR failed!")
-				}
-			}
-			c.ClearHashes()
-		} (i, c)
-	}
-	wg.Wait()
-
-}
-
-func TestUploadDownload(t *testing.T) {
-	testData := make([][]byte, NumClients)
-	for i := range testData {
-		data := make([]byte, BlockSize)
-		rand.Read(data)
-		testData[i] = data
-	}
-	uploadBlock(testData)
-	downloadBlock(testData)
-}
 
 func TestRounds(t *testing.T) {
 	b := 10
@@ -126,18 +32,21 @@ func TestRounds(t *testing.T) {
 	}
 
 	var wg sync.WaitGroup
-	for i := 0; i < b; i++ {
-		go func(i int) {
-			request(testData[i], i)
-			fmt.Println("Round :", i)
-		} (i)
-		upload()
+	for c := range clients {
 		wg.Add(1)
-		go func(i int) {
+		go func(c int) { //a client
 			defer wg.Done()
-			download(testData[i])
-			fmt.Println("Round ", i, "Done")
-		} (i)
+	  		for i := 0; i < b; i++ {
+				if c == 0 {
+					fmt.Println("Round ", i)
+				}
+				k := (i + c) % NumClients
+				clients[c].RequestBlock(i, Suite.Hash().Sum(testData[i][k]))
+				clients[c].Upload()
+				res := clients[c].Download()
+				membership(res, testData[i])
+			}
+		} (c)
 	}
 	wg.Wait()
 }
@@ -166,27 +75,3 @@ func TestMain(m *testing.M) {
 
 	os.Exit(m.Run())
 }
-
-// func TestStream(t *testing.T) {
-// 	for i := 0; i < 5; i++ {
-// 		sec := Suite.Secret().Pick(Suite.Cipher(abstract.RandomKey))
-// 		key := MarshalPoint(Suite.Point().Mul(Suite.Point().Base(), sec))
-// 		rand := Suite.Cipher(key)
-// 		bs := make([]byte, SecretSize)
-// 		rand.Read(bs)
-
-// 		rand2 := Suite.Cipher(key)
-// 		bs2 := make([]byte, SecretSize)
-// 		rand2.Read(bs2)
-
-// 		fmt.Println(bs)
-
-// 		for b := range bs {
-// 			if bs[b] != bs2[b] {
-// 				fmt.Println(bs)
-// 				fmt.Println(bs2)
-// 				panic("Not equal")
-// 			}
-// 		}
-// 	}
-// }

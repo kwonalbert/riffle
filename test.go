@@ -2,6 +2,7 @@ package afs
 
 import (
 	"fmt"
+	"log"
 	"sync"
 
 	. "afs/server"
@@ -181,6 +182,7 @@ func downloadBlock(testData [][]byte) {
 		found[i] = false
 		for j := range res {
 			same := true
+			same = same && (len(res[j]) == len(testData[i]))
 			for k := range res[j] {
 				same = same && (testData[i][k] == res[j][k])
 			}
@@ -190,7 +192,21 @@ func downloadBlock(testData [][]byte) {
 			}
 		}
 		if !found[i] {
-			panic("Didn't get all the data back")
+			log.Fatal("Didn't get all the data back")
 		}
 	}
+}
+
+func membership(res []byte, set [][]byte) {
+	for i := range set {
+		same := true
+		same = same && (len(res) == len(set[i]))
+		for k := range res {
+			same = same && (set[i][k] == res[k])
+		}
+		if same {
+			return
+		}
+	}
+	log.Fatal("Didn't get all data back")
 }

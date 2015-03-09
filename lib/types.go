@@ -1,23 +1,5 @@
 package lib
 
-import (
-	"github.com/dedis/crypto/abstract"
-	"github.com/dedis/crypto/edwards"
-)
-
-const NumClients = 10
-const NumServers = 2
-
-const MaxRounds = 3
-
-var Suite abstract.Suite = edwards.NewAES128SHA256Ed25519(false)
-
-//sizes in bytes
-const HashSize = 32
-const BlockSize = 32 //1KB for testing;
-//const BlockSize = 1024*1024 //1MB
-const SecretSize = 256/8
-
 type File struct {
 	Name            string
 	Hashes          [][]byte
