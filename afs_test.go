@@ -127,14 +127,16 @@ func TestRounds(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for i := 0; i < b; i++ {
-		fmt.Println("Round :", i)
-
-		go request(testData[i], i)
+		go func(i int) {
+			request(testData[i], i)
+			fmt.Println("Round :", i)
+		} (i)
 		go upload()
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
 			download(testData[i])
+			fmt.Println("Round ", i, "Done")
 		} (i)
 	}
 	wg.Wait()

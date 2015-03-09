@@ -92,9 +92,15 @@ func registerBlocks(testData [][]byte) {
 
 func request(testData [][]byte, offset int) {
 	n := len(clients)
+	var wg sync.WaitGroup
 	for i, c := range clients {
-		go c.RequestBlock(i, Suite.Hash().Sum(testData[(i+offset)%n]))
+		wg.Add(1)
+		go func(i int, c *Client) {
+			defer wg.Done()
+			c.RequestBlock(i, Suite.Hash().Sum(testData[(i+offset)%n]))
+		} (i, c)
 	}
+	wg.Wait()
 }
 
 func upload() {
