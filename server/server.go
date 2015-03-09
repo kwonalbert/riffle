@@ -34,34 +34,37 @@ type Server struct {
 	pks             []abstract.Point //all servers pks
 	nextPk          abstract.Point
 
-	allBlocks       []Block //all blocks store on this server
+	allBlocks       [][]Block //all blocks store on this server
 
 	//clients
 	clients         []string //clients connected here
 	clientMap       map[int]int //maps clients to dedicated server
 	numClients      int //#clients connect here
 	totalClients    int //total number of clients (sum of all servers)
+	masks           [][]byte //clients' masks for PIR
+	secrets         [][]byte //shared secret used to xor
 
 	//requesting
 	requestsChan    []chan Request
-	reqHashes       [][]byte
+	reqHashes       [][][]byte
 	reqHashesRdy    []chan bool
+	reqRound        int
 
 	//uploading
 	ublockChan      chan UpBlock
 	ublockChan2     chan UpBlock
 	shuffleChan     chan []UpBlock //collect all uploads together
+	upRound         int
 
 	//downloading
-	upHashes        [][]byte
+	upHashes        [][][]byte
 	dblocksChan     chan []Block
 	blocksRdy       []chan bool
 	upHashesRdy     []chan bool
-	blocks          map[int][]Block //keep track of blocks mapped to this server
+	blocks          [](map[int][]Block) //keep track of blocks mapped to this server
 	xorsChan        []map[int](chan Block)
 	maskChan        chan []byte
-	masks           [][]byte //clients' masks for PIR
-	secrets         [][]byte //shared secret used to xor
+	downRound       int
 }
 
 
@@ -88,29 +91,32 @@ func NewServer(addr string, port int, id int, servers []string) *Server {
 		pk:             pk,
 		pks:            make([]abstract.Point, len(servers)),
 
-		allBlocks:      nil,
+		allBlocks:      make([][]Block, MaxRounds),
 
 		clients:        []string{},
 		clientMap:      make(map[int]int),
 		numClients:     0,
 		totalClients:   0,
-
-		requestsChan:   nil,
-		reqHashes:      nil,
-		reqHashesRdy:   nil,
-
-		ublockChan:     make(chan UpBlock),
-		ublockChan2:    make(chan UpBlock),
-		shuffleChan:    make(chan []UpBlock),
-
-		upHashes:       nil,
-		dblocksChan:    make(chan []Block),
-		blocksRdy:      nil,
-		upHashesRdy:    nil,
-		blocks:         make(map[int][]Block),
-		xorsChan:       make([]map[int](chan Block), len(servers)),
 		masks:          nil,
 		secrets:        nil,
+
+		requestsChan:   nil,
+		reqHashes:      make([][][]byte, MaxRounds),
+		reqHashesRdy:   nil,
+		reqRound:       0,
+
+		ublockChan:     make(chan UpBlock, MaxRounds),
+		ublockChan2:    make(chan UpBlock, MaxRounds),
+		shuffleChan:    make(chan []UpBlock, MaxRounds),
+		upRound:        0,
+
+		upHashes:       make([][][]byte, MaxRounds),
+		dblocksChan:    make(chan []Block, MaxRounds),
+		blocksRdy:      nil,
+		upHashesRdy:    nil,
+		blocks:         make([](map[int][]Block), MaxRounds),
+		xorsChan:       make([]map[int](chan Block), len(servers)),
+		downRound:      0,
 	}
 
 	return &s
@@ -198,7 +204,9 @@ func (s *Server) handleRequest() {
 	}
 	wg.Wait()
 
-	s.reqHashes = XorsDC(allRequests)
+	round := s.reqRound % MaxRounds
+	s.reqHashes[round] = XorsDC(allRequests)
+	s.reqRound++
 	for i := range s.reqHashesRdy {
 		if s.clientMap[i] != s.id {
 			continue
@@ -225,7 +233,7 @@ func (s *Server) handleResponse() {
 				SId: s.id,
 				Block: Block {
 					Block: res,
-					Round: 0,
+					Round: s.downRound,
 				},
 			}
 			err := s.rpcServers[sid].Call("Server.PutClientBlock", cb, nil)
@@ -236,7 +244,9 @@ func (s *Server) handleResponse() {
 	}
 
 	//store it on this server as well
-	s.allBlocks = allBlocks
+	round := s.downRound % MaxRounds
+	s.allBlocks[round] = allBlocks
+	s.downRound++
 
 	for i := range s.blocksRdy {
 		if s.clientMap[i] != s.id {
@@ -323,7 +333,7 @@ func (s *Server) shuffleUploads() {
 			}
 			blocks[i] = Block {
 				Block: block,
-				Round: 0,
+				Round: s.upRound,
 			}
 		}
 		var wg sync.WaitGroup
@@ -350,6 +360,7 @@ func (s *Server) shuffleUploads() {
 			log.Fatal("Failed requesting shuffle: ", err)
 		}
 	}
+	s.upRound++
 }
 
 func (s *Server) shuffle(Xs [][]abstract.Point, Ys [][]abstract.Point, numChunks int) ([][]abstract.Point,
@@ -441,7 +452,7 @@ func (s *Server) RegisterDone2(numClients int, _ *int) error {
 	for i := 0; i < len(s.servers); i++ {
 		s.xorsChan[i] = make(map[int](chan Block))
 		for j := 0; j < numClients; j++ {
-			s.xorsChan[i][j] = make(chan Block)
+			s.xorsChan[i][j] = make(chan Block, MaxRounds)
 		}
 	}
 	s.masks = make([][]byte, numClients)
@@ -451,18 +462,21 @@ func (s *Server) RegisterDone2(numClients int, _ *int) error {
 	for i := range s.masks {
 		s.masks[i] = make([]byte, SecretSize)
 		s.secrets[i] = make([]byte, SecretSize)
-		s.requestsChan[i] = make(chan Request)
+		s.requestsChan[i] = make(chan Request, MaxRounds)
 	}
 
-	s.upHashes = make([][]byte, numClients)
+	s.upHashes = make([][][]byte, MaxRounds)
+	for i := range s.upHashes {
+		s.upHashes[i] = make([][]byte, numClients)
+	}
 
 	s.blocksRdy = make([]chan bool, numClients)
 	s.upHashesRdy = make([]chan bool, numClients)
 	s.reqHashesRdy = make([]chan bool, numClients)
 	for i := range s.blocksRdy {
-		s.blocksRdy[i] = make(chan bool)
-		s.upHashesRdy[i] = make(chan bool)
-		s.reqHashesRdy[i] = make(chan bool)
+		s.blocksRdy[i] = make(chan bool, MaxRounds)
+		s.upHashesRdy[i] = make(chan bool, MaxRounds)
+		s.reqHashesRdy[i] = make(chan bool, MaxRounds)
 	}
 	s.regDone = true
 
@@ -526,9 +540,10 @@ func (s *Server) ShareRequest(cr *ClientRequest, _ *int) error {
 	return nil
 }
 
-func (s *Server) GetReqHashes(id int, hashes *[][]byte) error {
-	<-s.reqHashesRdy[id]
-	*hashes = s.reqHashes
+func (s *Server) GetReqHashes(args *RequestArg, hashes *[][]byte) error {
+	<-s.reqHashesRdy[args.Id]
+	round := args.Round % MaxRounds
+	*hashes = s.reqHashes[round]
 	return nil
 }
 
@@ -554,9 +569,10 @@ func (s *Server) ShuffleBlocks(blocks *[]UpBlock, _*int) error {
 /////////////////////////////////
 //Download
 ////////////////////////////////
-func (s *Server) GetUpHashes(id int, hashes *[][]byte) error {
-	<-s.upHashesRdy[id]
-	*hashes = s.upHashes
+func (s *Server) GetUpHashes(args *RequestArg, hashes *[][]byte) error {
+	<-s.upHashesRdy[args.Id]
+	round := args.Round % MaxRounds
+	*hashes = s.upHashes[round]
 	return nil
 }
 
@@ -577,7 +593,8 @@ func (s *Server) GetResponse(cmask ClientMask, response *[]byte) error {
 	}
 	wg.Wait()
 	<-s.blocksRdy[cmask.Id]
-	r := ComputeResponse(s.allBlocks, cmask.Mask, s.secrets[cmask.Id])
+	round := cmask.Round % MaxRounds
+	r := ComputeResponse(s.allBlocks[round], cmask.Mask, s.secrets[cmask.Id])
 	Xor(Xors(otherBlocks), r)
 	*response = r
 	return nil
@@ -594,7 +611,8 @@ func (s *Server) PutClientBlock(cblock ClientBlock, _ *int) error {
 func (s *Server) PutUploadedBlocks(blocks *[]Block, _ *int) error {
 	//V1: hash here
 	for i := range *blocks {
-		s.upHashes[i] = Suite.Hash().Sum((*blocks)[i].Block)
+		round := (*blocks)[i].Round % MaxRounds
+		s.upHashes[round][i] = Suite.Hash().Sum((*blocks)[i].Block)
 	}
 
 	for i := range s.upHashesRdy {

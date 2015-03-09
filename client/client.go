@@ -28,10 +28,16 @@ type Client struct {
 	files           []File //files in hand
 	pieces          map[string][]byte //maps hashes to blocks
 
+	sem             chan int //semaphore for rounds
+
 	//crypto
 	g               abstract.Group
 	rand            cipher.Stream
 	pks             []abstract.Point //server public keys
+
+	reqRound        int
+	upRound         int
+	downRound       int
 
 	//downloading
 	dhashes         []byte
@@ -81,10 +87,15 @@ func NewClient(addr string, servers []string, myServer string) *Client {
 		totalClients:   -1,
 
 		pieces:         make(map[string][]byte),
+		sem:            make(chan int, MaxRounds),
 
 		g:              Suite,
 		rand:           Suite.Cipher(abstract.RandomKey),
 		pks:            pks,
+
+		reqRound:       0,
+		upRound:        0,
+		downRound:      0,
 
 		dhashes:        nil,
 		masks:          masks,
@@ -171,6 +182,7 @@ func (c *Client) RegisterBlock(block []byte) {
 //Request
 ////////////////////////////////
 func (c *Client) RequestBlock(slot int, hash []byte) {
+	c.sem <- 0
 	reqs := make([][]byte, c.totalClients)
 	for i := range reqs {
 		if i == c.id {
@@ -179,7 +191,7 @@ func (c *Client) RequestBlock(slot int, hash []byte) {
 			reqs[i] = make([]byte, len(hash))
 		}
 	}
-	req := Request{Hash: reqs, Round: 0}
+	req := Request{Hash: reqs, Round: c.reqRound}
 	cr := ClientRequest{Request: req, Id: c.id}
 	c.dhashes = hash
 	//TODO: xor in some secrets
@@ -187,15 +199,16 @@ func (c *Client) RequestBlock(slot int, hash []byte) {
 	if err != nil {
 		log.Fatal("Couldn't request a block: ", err)
 	}
+	c.reqRound++
 }
 
 func (c *Client) DownloadReqHash() [][]byte {
 	var hashes [][]byte
-	err := c.rpcServers[c.myServer].Call("Server.GetReqHashes", c.id, &hashes)
+	args := RequestArg{Id: c.id, Round: c.upRound}
+	err := c.rpcServers[c.myServer].Call("Server.GetReqHashes", &args, &hashes)
 	if err != nil {
 		log.Fatal("Couldn't download req hashes: ", err)
 	}
-	//TODO: handle unfound hash..
 	return hashes
 }
 
@@ -212,7 +225,9 @@ func (c *Client) Upload() {
 		match = c.pieces[string(h)]
 		break
 	}
-	c.UploadBlock(Block{Block: match, Round: 0})
+	//TODO: handle unfound hash..
+	c.UploadBlock(Block{Block: match, Round: c.upRound})
+	c.upRound++
 }
 
 func (c *Client) UploadBlock(block Block) {
@@ -240,12 +255,16 @@ func (c *Client) UploadBlock(block Block) {
 //Download
 ////////////////////////////////
 func (c *Client) Download() []byte {
-	return c.DownloadBlock(c.dhashes)
+	block := c.DownloadBlock(c.dhashes)
+	c.downRound++
+	<-c.sem
+	return block
 }
 
 func (c *Client) DownloadBlock(hash []byte) []byte {
 	var hashes [][]byte
-	err := c.rpcServers[c.myServer].Call("Server.GetUpHashes", c.id, &hashes)
+	args := RequestArg{Id: c.id, Round: c.downRound}
+	err := c.rpcServers[c.myServer].Call("Server.GetUpHashes", &args, &hashes)
 	if err != nil {
 		log.Fatal("Couldn't download up hashes: ", err)
 	}
@@ -274,7 +293,7 @@ func (c *Client) DownloadSlot(slot int) []byte {
 	//one response includes all the secrets
 	response := make([]byte, BlockSize)
 	secretsXor := Xors(c.secrets)
-	cMask := ClientMask {Mask: mask, Id: c.id}
+	cMask := ClientMask {Mask: mask, Id: c.id, Round: c.downRound}
 	err := c.rpcServers[c.myServer].Call("Server.GetResponse", cMask, &response)
 	if err != nil {
 		log.Fatal("Could not get response: ", err)

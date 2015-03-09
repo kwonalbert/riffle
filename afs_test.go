@@ -113,24 +113,31 @@ func TestUploadDownload(t *testing.T) {
 func TestRounds(t *testing.T) {
 	b := 5
 
-	testData := make([][]byte, NumClients)
+	testData := make([][][]byte, b)
 	for i := 0; i < b; i++ {
+		testData[i] = make([][]byte, NumClients)
 		for j := range testData {
 			data := make([]byte, BlockSize)
 			rand.Read(data)
-			testData[j] = data
+			testData[i][j] = data
 		}
 
-		registerBlocks(testData)
+		registerBlocks(testData[i])
 	}
 
+	var wg sync.WaitGroup
 	for i := 0; i < b; i++ {
 		fmt.Println("Round :", i)
 
-		request(testData, i)
-		upload()
-		download(testData)
+		go request(testData[i], i)
+		go upload()
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			download(testData[i])
+		} (i)
 	}
+	wg.Wait()
 }
 
 func TestMain(m *testing.M) {

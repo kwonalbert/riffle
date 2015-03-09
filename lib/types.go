@@ -5,8 +5,10 @@ import (
 	"github.com/dedis/crypto/edwards"
 )
 
-const NumClients = 10
+const NumClients = 5
 const NumServers = 2
+
+const MaxRounds = 3
 
 var Suite abstract.Suite = edwards.NewAES128SHA256Ed25519(false)
 
@@ -67,6 +69,7 @@ type ClientDH struct {
 type ClientMask struct {
 	Mask            []byte
 	Id              int
+	Round           int
 }
 
 type ClientRegistration struct {
@@ -84,4 +87,9 @@ type ClientBlock struct {
 	CId             int //client id for the block
 	SId             int //sending server's id
 	Block           Block
+}
+
+type RequestArg struct {
+	Id              int
+	Round           int
 }
