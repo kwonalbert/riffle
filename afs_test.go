@@ -116,7 +116,7 @@ func TestRounds(t *testing.T) {
 	testData := make([][][]byte, b)
 	for i := 0; i < b; i++ {
 		testData[i] = make([][]byte, NumClients)
-		for j := range testData {
+		for j := range testData[i] {
 			data := make([]byte, BlockSize)
 			rand.Read(data)
 			testData[i][j] = data
@@ -127,17 +127,17 @@ func TestRounds(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for i := 0; i < b; i++ {
-		go func(i int) {
-			request(testData[i], i)
-			fmt.Println("Round :", i)
-		} (i)
-		go upload()
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
+		//go func(i int) {
+		request(testData[i], i)
+		fmt.Println("Round :", i)
+		//} (i)
+		upload()
+		//wg.Add(1)
+		//go func(i int) {
+		//	defer wg.Done()
 			download(testData[i])
-			fmt.Println("Round ", i, "Done")
-		} (i)
+		//	fmt.Println("Round ", i, "Done")
+		//} (i)
 	}
 	wg.Wait()
 }
@@ -166,3 +166,27 @@ func TestMain(m *testing.M) {
 
 	os.Exit(m.Run())
 }
+
+// func TestStream(t *testing.T) {
+// 	for i := 0; i < 5; i++ {
+// 		sec := Suite.Secret().Pick(Suite.Cipher(abstract.RandomKey))
+// 		key := MarshalPoint(Suite.Point().Mul(Suite.Point().Base(), sec))
+// 		rand := Suite.Cipher(key)
+// 		bs := make([]byte, SecretSize)
+// 		rand.Read(bs)
+
+// 		rand2 := Suite.Cipher(key)
+// 		bs2 := make([]byte, SecretSize)
+// 		rand2.Read(bs2)
+
+// 		fmt.Println(bs)
+
+// 		for b := range bs {
+// 			if bs[b] != bs2[b] {
+// 				fmt.Println(bs)
+// 				fmt.Println(bs2)
+// 				panic("Not equal")
+// 			}
+// 		}
+// 	}
+// }

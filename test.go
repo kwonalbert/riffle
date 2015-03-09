@@ -130,6 +130,7 @@ func download(testData [][]byte) {
 		go func(i int, c *Client) {
 			defer wg.Done()
 			res[i] = c.Download()
+			fmt.Println("res: ", res[i])
 		} (i, c)
 	}
 	wg.Wait()
@@ -140,14 +141,10 @@ func download(testData [][]byte) {
 	}
 
 	for i := range testData {
-		if found[i] {
-			fmt.Println(testData)
-			fmt.Println(res)
-			panic("Duplicate blocks!")
-		}
 		found[i] = false
 		for j := range res {
 			same := true
+			same = same && (len(res[j]) == len(testData[i]))
 			for k := range res[j] {
 				same = same && (testData[i][k] == res[j][k])
 			}
@@ -182,11 +179,6 @@ func downloadBlock(testData [][]byte) {
 	}
 
 	for i := range testData {
-		if found[i] {
-			fmt.Println(testData)
-			fmt.Println(res)
-			panic("Duplicate blocks!")
-		}
 		found[i] = false
 		for j := range res {
 			same := true

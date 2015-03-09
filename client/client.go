@@ -2,7 +2,7 @@ package client
 
 import (
 	//"flag"
-	//"fmt"
+	"fmt"
 	"log"
 	//"net"
 	"net/rpc"
@@ -36,8 +36,14 @@ type Client struct {
 	pks             []abstract.Point //server public keys
 
 	reqRound        int
+	reqHashRound    int
 	upRound         int
 	downRound       int
+
+	reqLock         *sync.Mutex
+	reqHashLock     *sync.Mutex
+	upLock          *sync.Mutex
+	downLock        *sync.Mutex
 
 	//downloading
 	dhashes         []byte
@@ -94,8 +100,14 @@ func NewClient(addr string, servers []string, myServer string) *Client {
 		pks:            pks,
 
 		reqRound:       0,
+		reqHashRound:   0,
 		upRound:        0,
 		downRound:      0,
+
+		reqLock:        new(sync.Mutex),
+		reqHashLock:    new(sync.Mutex),
+		upLock:         new(sync.Mutex),
+		downLock:       new(sync.Mutex),
 
 		dhashes:        nil,
 		masks:          masks,
@@ -182,6 +194,7 @@ func (c *Client) RegisterBlock(block []byte) {
 //Request
 ////////////////////////////////
 func (c *Client) RequestBlock(slot int, hash []byte) {
+	c.reqLock.Lock()
 	c.sem <- 0
 	reqs := make([][]byte, c.totalClients)
 	for i := range reqs {
@@ -200,22 +213,27 @@ func (c *Client) RequestBlock(slot int, hash []byte) {
 		log.Fatal("Couldn't request a block: ", err)
 	}
 	c.reqRound++
-}
-
-func (c *Client) DownloadReqHash() [][]byte {
-	var hashes [][]byte
-	args := RequestArg{Id: c.id, Round: c.upRound}
-	err := c.rpcServers[c.myServer].Call("Server.GetReqHashes", &args, &hashes)
-	if err != nil {
-		log.Fatal("Couldn't download req hashes: ", err)
-	}
-	return hashes
+	c.reqLock.Unlock()
 }
 
 /////////////////////////////////
 //Upload
 ////////////////////////////////
+func (c *Client) DownloadReqHash() [][]byte {
+	c.reqHashLock.Lock()
+	var hashes [][]byte
+	args := RequestArg{Id: c.id, Round: c.reqHashRound}
+	err := c.rpcServers[c.myServer].Call("Server.GetReqHashes", &args, &hashes)
+	if err != nil {
+		log.Fatal("Couldn't download req hashes: ", err)
+	}
+	c.reqHashRound++
+	c.reqHashLock.Unlock()
+	return hashes
+}
+
 func (c *Client) Upload() {
+	c.upLock.Lock()
 	hashes := c.DownloadReqHash()
 	var match []byte
 	for _, h := range hashes {
@@ -225,9 +243,13 @@ func (c *Client) Upload() {
 		match = c.pieces[string(h)]
 		break
 	}
+
+	fmt.Println("Round: ", c.upRound, ", Data: ", match)
+
 	//TODO: handle unfound hash..
 	c.UploadBlock(Block{Block: match, Round: c.upRound})
 	c.upRound++
+	c.upLock.Unlock()
 }
 
 func (c *Client) UploadBlock(block Block) {
@@ -236,7 +258,7 @@ func (c *Client) UploadBlock(block Block) {
 		BC1: make([][]byte, len(bc1s)),
 		BC2: make([][]byte, len(bc2s)),
 
-		Round: 0,
+		Round: block.Round,
 	}
 
 	for i := range bc1s {
@@ -255,9 +277,11 @@ func (c *Client) UploadBlock(block Block) {
 //Download
 ////////////////////////////////
 func (c *Client) Download() []byte {
+	c.downLock.Lock()
 	block := c.DownloadBlock(c.dhashes)
 	c.downRound++
 	<-c.sem
+	c.downLock.Unlock()
 	return block
 }
 
@@ -301,7 +325,15 @@ func (c *Client) DownloadSlot(slot int) []byte {
 
 	Xor(secretsXor, response)
 
-	//TODO: call PRNG to update all secrets
+	for i := range c.secrets {
+		rand := Suite.Cipher(c.secrets[i])
+		rand.Read(c.secrets[i])
+	}
+
+	for i := range c.masks {
+		rand := Suite.Cipher(c.masks[i])
+		rand.Read(c.masks[i])
+	}
 
 	return response
 }
