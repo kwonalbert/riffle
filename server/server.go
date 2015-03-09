@@ -43,9 +43,10 @@ type Server struct {
 	secrets         [][]byte //shared secret used to xor
 
 	reqRound        int
-	upRound         int
+	gatherRound     int
+	shuffleRound    int
 	downRound       int
-	rounds          []Round
+	rounds          []*Round
 }
 
 //per round variables
@@ -81,7 +82,7 @@ func NewServer(addr string, port int, id int, servers []string) *Server {
 	sk := Suite.Secret().Pick(rand)
 	pk := Suite.Point().Mul(nil, sk)
 
-	rounds := make([]Round, MaxRounds)
+	rounds := make([]*Round, MaxRounds)
 
 	for i := range rounds {
 		r := Round{
@@ -101,7 +102,7 @@ func NewServer(addr string, port int, id int, servers []string) *Server {
 			upHashesRdy:    nil,
 			xorsChan:       make([]map[int](chan Block), len(servers)),
 		}
-		rounds[i] = r
+		rounds[i] = &r
 	}
 
 	s := Server{
@@ -126,7 +127,8 @@ func NewServer(addr string, port int, id int, servers []string) *Server {
 		secrets:        nil,
 
 		reqRound:       0,
-		upRound:        0,
+		gatherRound:    0,
+		shuffleRound:   0,
 		downRound:      0,
 		rounds:         rounds,
 	}
@@ -148,11 +150,17 @@ func (s *Server) MainLoop() {
 	}
 	go rpcServer.Accept(l)
 
-	RunFunc(s.handleResponse)
-	RunFunc(s.handleUpload)
+	RunFunc(s.handleRequests)
+	for r := 0; r < MaxRounds; r++ {
+		go func(r int){
+			for{
+				s.handleUpload(r)
+			}
+		} (r)
+	}
 	RunFunc(s.gatherUploads)
 	RunFunc(s.shuffleUploads)
-	RunFunc(s.handleRequest)
+	RunFunc(s.handleResponses)
 }
 
 func (s *Server) ConnectServers() {
@@ -198,11 +206,12 @@ func (s *Server) ConnectServers() {
 	s.rpcServers = rpcServers
 }
 
-func (s *Server) handleRequest() {
+func (s *Server) handleRequests() {
 	if !s.regDone {
 		return
 	}
 
+	round := s.reqRound % MaxRounds
 	allRequests := make([][][]byte, s.totalClients)
 
 	var wg sync.WaitGroup
@@ -210,28 +219,31 @@ func (s *Server) handleRequest() {
 		wg.Add(1)
 		go func (i int) {
 			defer wg.Done()
-			req := <-s.rounds[0].requestsChan[i]
+			req := <-s.rounds[round].requestsChan[i]
 			allRequests[i] = req.Hash
 		} (i)
 	}
 	wg.Wait()
 
-	s.rounds[0].reqHashes = XorsDC(allRequests)
-	s.reqRound++
-	for i := range s.rounds[0].reqHashesRdy {
+	s.rounds[round].reqHashes = XorsDC(allRequests)
+	for i := range s.rounds[round].reqHashesRdy {
 		if s.clientMap[i] != s.id {
 			continue
 		}
-		go func(i int) {s.rounds[0].reqHashesRdy[i] <- true}(i)
+		go func(i int, rount int) {
+			s.rounds[round].reqHashesRdy[i] <- true
+		} (i, round)
 	}
+	s.reqRound++
 }
 
-func (s *Server) handleResponse() {
+func (s *Server) handleResponses() {
 	if !s.regDone {
 		return
 	}
 
-	allBlocks := <-s.rounds[0].dblocksChan
+	round := s.downRound % MaxRounds
+	allBlocks := <-s.rounds[round].dblocksChan
 	for i := 0; i < s.totalClients; i++ {
 		if s.clientMap[i] == s.id {
 			continue
@@ -248,7 +260,7 @@ func (s *Server) handleResponse() {
 				SId: s.id,
 				Block: Block {
 					Block: res,
-					Round: s.downRound,
+					Round: round,
 				},
 			}
 			err := s.rpcServers[sid].Call("Server.PutClientBlock", cb, nil)
@@ -259,23 +271,25 @@ func (s *Server) handleResponse() {
 	}
 
 	//store it on this server as well
-	s.rounds[0].allBlocks = allBlocks
-	s.downRound++
+	s.rounds[round].allBlocks = allBlocks
 
-	for i := range s.rounds[0].blocksRdy {
+	for i := range s.rounds[round].blocksRdy {
 		if s.clientMap[i] != s.id {
 			continue
 		}
-		go func(i int) {s.rounds[0].blocksRdy[i] <- true}(i)
+		go func(i int, round int) {
+			s.rounds[round].blocksRdy[i] <- true
+		} (i, round)
 	}
+	s.downRound++
 }
 
-func (s *Server) handleUpload() {
+func (s *Server) handleUpload(round int) {
 	if !s.regDone {
 		return
 	}
 
-	upBlock := <-s.rounds[0].ublockChan
+	upBlock := <-s.rounds[round].ublockChan
 	err := s.rpcServers[0].Call("Server.UploadBlock2", upBlock, nil)
 	if err != nil {
 		log.Fatal("Couldn't send block to first server: ", err)
@@ -287,11 +301,13 @@ func (s *Server) gatherUploads() {
 		return
 	}
 
+	round := s.gatherRound % MaxRounds
 	allUploads := make([]UpBlock, s.totalClients)
 	for i := 0; i < s.totalClients; i++ {
-		allUploads[i] = <-s.rounds[0].ublockChan2
+		allUploads[i] = <-s.rounds[round].ublockChan2
 	}
-	s.rounds[0].shuffleChan <- allUploads
+	s.rounds[round].shuffleChan <- allUploads
+	s.gatherRound++
 }
 
 func (s *Server) shuffleUploads() {
@@ -299,7 +315,8 @@ func (s *Server) shuffleUploads() {
 		return
 	}
 
-	allUploads := <-s.rounds[0].shuffleChan
+	round := s.shuffleRound % MaxRounds
+	allUploads := <-s.rounds[round].shuffleChan
 	//shuffle and reblind
 
 	numBlockChunks := len(allUploads[0].BC1)
@@ -347,7 +364,7 @@ func (s *Server) shuffleUploads() {
 			}
 			blocks[i] = Block {
 				Block: block,
-				Round: s.upRound,
+				Round: round,
 			}
 		}
 		var wg sync.WaitGroup
@@ -374,7 +391,7 @@ func (s *Server) shuffleUploads() {
 			log.Fatal("Failed requesting shuffle: ", err)
 		}
 	}
-	s.upRound++
+	s.shuffleRound++
 }
 
 func (s *Server) shuffle(Xs [][]abstract.Point, Ys [][]abstract.Point, numChunks int) ([][]abstract.Point,
@@ -555,13 +572,15 @@ func (s *Server) RequestBlock(cr *ClientRequest, _ *int) error {
 }
 
 func (s *Server) ShareRequest(cr *ClientRequest, _ *int) error {
-	s.rounds[0].requestsChan[cr.Id] <- cr.Request
+	round := cr.Request.Round % MaxRounds
+	s.rounds[round].requestsChan[cr.Id] <- cr.Request
 	return nil
 }
 
 func (s *Server) GetReqHashes(args *RequestArg, hashes *[][]byte) error {
-	<-s.rounds[0].reqHashesRdy[args.Id]
-	*hashes = s.rounds[0].reqHashes
+	round := args.Round % MaxRounds
+	<-s.rounds[round].reqHashesRdy[args.Id]
+	*hashes = s.rounds[round].reqHashes
 	return nil
 }
 
@@ -569,17 +588,20 @@ func (s *Server) GetReqHashes(args *RequestArg, hashes *[][]byte) error {
 //Upload
 ////////////////////////////////
 func (s *Server) UploadBlock(block *UpBlock, _ *int) error {
-	s.rounds[0].ublockChan <- *block
+	round := block.Round % MaxRounds
+	s.rounds[round].ublockChan <- *block
 	return nil
 }
 
 func (s *Server) UploadBlock2(block *UpBlock, _*int) error {
-	s.rounds[0].ublockChan2 <- *block
+	round := block.Round % MaxRounds
+	s.rounds[round].ublockChan2 <- *block
 	return nil
 }
 
 func (s *Server) ShuffleBlocks(blocks *[]UpBlock, _*int) error {
-	s.rounds[0].shuffleChan <- *blocks
+	round := (*blocks)[0].Round % MaxRounds
+	s.rounds[round].shuffleChan <- *blocks
 	return nil
 }
 
@@ -588,14 +610,16 @@ func (s *Server) ShuffleBlocks(blocks *[]UpBlock, _*int) error {
 //Download
 ////////////////////////////////
 func (s *Server) GetUpHashes(args *RequestArg, hashes *[][]byte) error {
-	<-s.rounds[0].upHashesRdy[args.Id]
-	*hashes = s.rounds[0].upHashes
+	round := args.Round % MaxRounds
+	<-s.rounds[round].upHashesRdy[args.Id]
+	*hashes = s.rounds[round].upHashes
 	return nil
 }
 
 func (s *Server) GetResponse(cmask ClientMask, response *[]byte) error {
 	otherBlocks := make([][]byte, len(s.servers))
 	var wg sync.WaitGroup
+	round := cmask.Round % MaxRounds
 	for i := range otherBlocks {
 		if i == s.id {
 			otherBlocks[i] = make([]byte, BlockSize)
@@ -603,14 +627,14 @@ func (s *Server) GetResponse(cmask ClientMask, response *[]byte) error {
 			wg.Add(1)
 			go func(i int, cmask ClientMask) {
 				defer wg.Done()
-				curBlock := <-s.rounds[0].xorsChan[i][cmask.Id]
+				curBlock := <-s.rounds[round].xorsChan[i][cmask.Id]
 				otherBlocks[i] = curBlock.Block
 			} (i, cmask)
 		}
 	}
 	wg.Wait()
-	<-s.rounds[0].blocksRdy[cmask.Id]
-	r := ComputeResponse(s.rounds[0].allBlocks, cmask.Mask, s.secrets[cmask.Id])
+	<-s.rounds[round].blocksRdy[cmask.Id]
+	r := ComputeResponse(s.rounds[round].allBlocks, cmask.Mask, s.secrets[cmask.Id])
 	rand := Suite.Cipher(s.secrets[cmask.Id])
 	rand.Read(s.secrets[cmask.Id])
 	Xor(Xors(otherBlocks), r)
@@ -621,25 +645,29 @@ func (s *Server) GetResponse(cmask ClientMask, response *[]byte) error {
 //used to push response for particular client
 func (s *Server) PutClientBlock(cblock ClientBlock, _ *int) error {
 	block := cblock.Block
-	s.rounds[0].xorsChan[cblock.SId][cblock.CId] <- block
+	round := block.Round % MaxRounds
+	s.rounds[round].xorsChan[cblock.SId][cblock.CId] <- block
 	return nil
 }
 
 //used to push the uploaded blocks from the final shuffle server
 func (s *Server) PutUploadedBlocks(blocks *[]Block, _ *int) error {
 	//V1: hash here
+	round := (*blocks)[0].Round % MaxRounds
 	for i := range *blocks {
-		s.rounds[0].upHashes[i] = Suite.Hash().Sum((*blocks)[i].Block)
+		s.rounds[round].upHashes[i] = Suite.Hash().Sum((*blocks)[i].Block)
 	}
 
-	for i := range s.rounds[0].upHashesRdy {
+	for i := range s.rounds[round].upHashesRdy {
 		if s.clientMap[i] != s.id {
 			continue
 		}
-		go func(i int) {s.rounds[0].upHashesRdy[i] <- true}(i)
+		go func(i int, round int) {
+			s.rounds[round].upHashesRdy[i] <- true
+		} (i, round)
 	}
 
-	s.rounds[0].dblocksChan <- *blocks
+	s.rounds[round].dblocksChan <- *blocks
 	return nil
 }
 

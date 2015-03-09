@@ -111,7 +111,7 @@ func TestUploadDownload(t *testing.T) {
 }
 
 func TestRounds(t *testing.T) {
-	b := 5
+	b := 10
 
 	testData := make([][][]byte, b)
 	for i := 0; i < b; i++ {
@@ -127,17 +127,17 @@ func TestRounds(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for i := 0; i < b; i++ {
-		//go func(i int) {
-		request(testData[i], i)
-		fmt.Println("Round :", i)
-		//} (i)
+		go func(i int) {
+			request(testData[i], i)
+			fmt.Println("Round :", i)
+		} (i)
 		upload()
-		//wg.Add(1)
-		//go func(i int) {
-		//	defer wg.Done()
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
 			download(testData[i])
-		//	fmt.Println("Round ", i, "Done")
-		//} (i)
+			fmt.Println("Round ", i, "Done")
+		} (i)
 	}
 	wg.Wait()
 }

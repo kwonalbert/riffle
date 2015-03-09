@@ -5,7 +5,7 @@ import (
 	"github.com/dedis/crypto/edwards"
 )
 
-const NumClients = 3
+const NumClients = 10
 const NumServers = 2
 
 const MaxRounds = 3

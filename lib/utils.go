@@ -140,7 +140,6 @@ func UnmarshalPoint(ptByte []byte) abstract.Point {
 	return pt
 }
 
-
 func RunFunc(f func()) {
 	go func () {
 		for {

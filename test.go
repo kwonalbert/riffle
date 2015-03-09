@@ -130,7 +130,6 @@ func download(testData [][]byte) {
 		go func(i int, c *Client) {
 			defer wg.Done()
 			res[i] = c.Download()
-			fmt.Println("res: ", res[i])
 		} (i, c)
 	}
 	wg.Wait()
@@ -154,8 +153,8 @@ func download(testData [][]byte) {
 			}
 		}
 		if !found[i] {
-			//panic("Didn't get all the data back")
-			fmt.Println("Didn't get all the data back")
+			panic("Didn't get all the data back")
+			//fmt.Println("Didn't get all the data back")
 		}
 	}
 }

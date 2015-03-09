@@ -2,7 +2,7 @@ package client
 
 import (
 	//"flag"
-	"fmt"
+	//"fmt"
 	"log"
 	//"net"
 	"net/rpc"
@@ -46,7 +46,7 @@ type Client struct {
 	downLock        *sync.Mutex
 
 	//downloading
-	dhashes         []byte
+	dhashes         [][]byte //hash to download (per round)
 	masks           [][]byte //masks used
 	secrets         [][]byte //secret for data
 }
@@ -109,7 +109,7 @@ func NewClient(addr string, servers []string, myServer string) *Client {
 		upLock:         new(sync.Mutex),
 		downLock:       new(sync.Mutex),
 
-		dhashes:        nil,
+		dhashes:        make([][]byte, MaxRounds),
 		masks:          masks,
 		secrets:        secrets,
 	}
@@ -196,6 +196,7 @@ func (c *Client) RegisterBlock(block []byte) {
 func (c *Client) RequestBlock(slot int, hash []byte) {
 	c.reqLock.Lock()
 	c.sem <- 0
+	round := c.reqRound % MaxRounds
 	reqs := make([][]byte, c.totalClients)
 	for i := range reqs {
 		if i == c.id {
@@ -204,9 +205,9 @@ func (c *Client) RequestBlock(slot int, hash []byte) {
 			reqs[i] = make([]byte, len(hash))
 		}
 	}
-	req := Request{Hash: reqs, Round: c.reqRound}
+	req := Request{Hash: reqs, Round: round}
 	cr := ClientRequest{Request: req, Id: c.id}
-	c.dhashes = hash
+	c.dhashes[round] = hash
 	//TODO: xor in some secrets
 	err := c.rpcServers[c.myServer].Call("Server.RequestBlock", &cr, nil)
 	if err != nil {
@@ -244,8 +245,6 @@ func (c *Client) Upload() {
 		break
 	}
 
-	fmt.Println("Round: ", c.upRound, ", Data: ", match)
-
 	//TODO: handle unfound hash..
 	c.UploadBlock(Block{Block: match, Round: c.upRound})
 	c.upRound++
@@ -278,7 +277,8 @@ func (c *Client) UploadBlock(block Block) {
 ////////////////////////////////
 func (c *Client) Download() []byte {
 	c.downLock.Lock()
-	block := c.DownloadBlock(c.dhashes)
+	round := c.downRound % MaxRounds
+	block := c.DownloadBlock(c.dhashes[round])
 	c.downRound++
 	<-c.sem
 	c.downLock.Unlock()
