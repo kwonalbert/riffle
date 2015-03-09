@@ -8,16 +8,18 @@ import (
 const NumClients = 10
 const NumServers = 2
 
+var Suite abstract.Suite = edwards.NewAES128SHA256Ed25519(false)
+
 //sizes in bytes
-const HashSize = 160/8
+const HashSize = 32
 const BlockSize = 32 //1KB for testing;
 //const BlockSize = 1024*1024 //1MB
 const SecretSize = 256/8
 
-var Suite abstract.Suite = edwards.NewAES128SHA256Ed25519(false)
-
 type File struct {
 	Name            string
+	Hashes          [][]byte
+	Blocks          [][]byte
 }
 
 type Block struct {

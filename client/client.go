@@ -25,13 +25,16 @@ type Client struct {
 	myServer        int //server downloading from (using PIR)
 	totalClients    int
 
+	files           []File //files in hand
+	pieces          map[string][]byte //maps hashes to blocks
+
 	//crypto
 	g               abstract.Group
 	rand            cipher.Stream
 	pks             []abstract.Point //server public keys
 
 	//downloading
-	hash            []byte
+	dhashes         []byte
 	masks           [][]byte //masks used
 	secrets         [][]byte //secret for data
 }
@@ -71,14 +74,19 @@ func NewClient(addr string, servers []string, myServer string) *Client {
 	//id comes from servers
 	c := Client {
 		addr:           addr,
+		id:             -1,
 		servers:        servers,
 		rpcServers:     rpcServers,
 		myServer:       myServerIdx,
+		totalClients:   -1,
+
+		pieces:         make(map[string][]byte),
 
 		g:              Suite,
 		rand:           Suite.Cipher(abstract.RandomKey),
 		pks:            pks,
 
+		dhashes:        nil,
 		masks:          masks,
 		secrets:        secrets,
 	}
@@ -145,9 +153,18 @@ func (c *Client) ShareSecret() {
 			_ = <-call2.Done
 			c.masks[i] = MarshalPoint(c.g.Point().Mul(UnmarshalPoint(servPub1), secret1))
 			c.secrets[i] = MarshalPoint(c.g.Point().Mul(UnmarshalPoint(servPub2), secret2))
+			c.secrets[i] = make([]byte, SecretSize)
 		} (i, rpcServer)
 	}
 	wg.Wait()
+}
+
+/////////////////////////////////
+//Internal
+////////////////////////////////
+func (c *Client) RegisterBlock(block []byte) {
+	hash := Suite.Hash().Sum(block)
+	c.pieces[string(hash)] = block
 }
 
 /////////////////////////////////
@@ -164,6 +181,7 @@ func (c *Client) RequestBlock(slot int, hash []byte) {
 	}
 	req := Request{Hash: reqs, Round: 0}
 	cr := ClientRequest{Request: req, Id: c.id}
+	c.dhashes = hash
 	//TODO: xor in some secrets
 	err := c.rpcServers[c.myServer].Call("Server.RequestBlock", &cr, nil)
 	if err != nil {
@@ -184,6 +202,19 @@ func (c *Client) DownloadReqHash() [][]byte {
 /////////////////////////////////
 //Upload
 ////////////////////////////////
+func (c *Client) Upload() {
+	hashes := c.DownloadReqHash()
+	var match []byte
+	for _, h := range hashes {
+		if len(c.pieces[string(h)]) == 0 {
+			continue
+		}
+		match = c.pieces[string(h)]
+		break
+	}
+	c.UploadBlock(Block{Block: match, Round: 0})
+}
+
 func (c *Client) UploadBlock(block Block) {
 	bc1s, bc2s := Encrypt(c.g, block.Block, c.pks)
 	upblock := UpBlock {
@@ -208,6 +239,9 @@ func (c *Client) UploadBlock(block Block) {
 /////////////////////////////////
 //Download
 ////////////////////////////////
+func (c *Client) Download() []byte {
+	return c.DownloadBlock(c.dhashes)
+}
 
 func (c *Client) DownloadBlock(hash []byte) []byte {
 	var hashes [][]byte
@@ -245,6 +279,7 @@ func (c *Client) DownloadSlot(slot int) []byte {
 	if err != nil {
 		log.Fatal("Could not get response: ", err)
 	}
+
 	Xor(secretsXor, response)
 
 	//TODO: call PRNG to update all secrets
@@ -273,4 +308,19 @@ func (c *Client) RpcServers() []*rpc.Client {
 
 func (c *Client) ClearHashes() {
 	c.rpcServers[c.myServer].Call("Server.GetUpHashes", c.id, nil)
+}
+
+
+/////////////////////////////////
+//MAIN
+/////////////////////////////////
+func main() {
+	// var addr *string = flag.String("a", "addr", "addr [address]")
+	// var files *string = flag.String("f", "files", "files [filenames]")
+	// var servers *string = flag.String("s", "servers", "servers [server list]")
+
+	// flag.Parse()
+
+	// c := NewClient()
+
 }

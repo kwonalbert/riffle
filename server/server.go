@@ -412,6 +412,9 @@ func (s *Server) Register(client *ClientRegistration, clientId *int) error {
 			log.Fatal(fmt.Sprintf("Cannot connect to %d: ", client.ServerId), err)
 		}
 	}
+	if s.totalClients == NumClients {
+		s.RegisterDone()
+	}
 	return nil
 }
 
@@ -494,6 +497,7 @@ func (s *Server) ShareMask(clientDH *ClientDH, serverPub *[]byte) error {
 func (s *Server) ShareSecret(clientDH *ClientDH, serverPub *[]byte) error {
 	pub, shared := s.shareSecret(UnmarshalPoint(clientDH.Public))
 	s.secrets[clientDH.Id] = MarshalPoint(shared)
+	s.secrets[clientDH.Id] = make([]byte, SecretSize)
 	*serverPub = MarshalPoint(pub)
 	return nil
 }
@@ -558,14 +562,20 @@ func (s *Server) GetUpHashes(id int, hashes *[][]byte) error {
 
 func (s *Server) GetResponse(cmask ClientMask, response *[]byte) error {
 	otherBlocks := make([][]byte, len(s.servers))
+	var wg sync.WaitGroup
 	for i := range otherBlocks {
 		if i == s.id {
 			otherBlocks[i] = make([]byte, BlockSize)
 		} else {
-			curBlock := <-s.xorsChan[i][cmask.Id]
-			otherBlocks[i] = curBlock.Block
+			wg.Add(1)
+			go func(i int, cmask ClientMask) {
+				defer wg.Done()
+				curBlock := <-s.xorsChan[i][cmask.Id]
+				otherBlocks[i] = curBlock.Block
+			} (i, cmask)
 		}
 	}
+	wg.Wait()
 	<-s.blocksRdy[cmask.Id]
 	r := ComputeResponse(s.allBlocks, cmask.Mask, s.secrets[cmask.Id])
 	Xor(Xors(otherBlocks), r)
@@ -610,9 +620,17 @@ func (s *Server) Secrets() [][]byte {
 	return s.secrets
 }
 
+/////////////////////////////////
+//MAIN
+/////////////////////////////////
+func main() {
+	// var addr *string = flag.String("a", "addr", "addr [address]")
+	// var id *int = flag.Int("i", "id", "id [num]")
+	// var port *int = flag.Int("p", "port", "port [num]")
+	// var servers *string = flag.Strin("s", "servers", "servers [servers list]")
 
+	// var ss []string
 
-
-
-
-
+	// s := NewServer(*addr, *port, *id, ss)
+	// //s.ConnectServers()
+}
