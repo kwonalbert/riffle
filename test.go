@@ -27,24 +27,14 @@ func setup(numServers int, numClients int) ([]*Server, []*Client) {
 	fmt.Println("Starting servers")
 	var wg sync.WaitGroup
 	for i := range ss {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			s := NewServer(ss[i], 8000+i, i, ss)
-			servers[i] = s
-			s.MainLoop()
-		}(i)
+		s := NewServer(ss[i], 8000+i, i, ss)
+		servers[i] = s
+		s.MainLoop()
 	}
-	wg.Wait()
 
 	for _, s := range servers {
-		wg.Add(1)
-		go func(s *Server) {
-			defer wg.Done()
-			s.ConnectServers()
-		}(s)
+		s.ConnectServers()
 	}
-	wg.Wait()
 
 	fmt.Println("Registering Clients")
 	for i := range cs {
@@ -58,16 +48,32 @@ func setup(numServers int, numClients int) ([]*Server, []*Client) {
 	}
 	wg.Wait()
 
+	fmt.Println("Created clients")
+
 	for _, c := range clients {
-		wg.Add(1)
-		go func(c *Client) {
-			defer wg.Done()
-			c.RegisterDone()
-		} (c)
+		c.RegisterDone()
 	}
-	wg.Wait()
 
 	fmt.Println("Done Registration")
+
+	for _, c := range clients {
+		c.ShareSecret()
+	}
+
+	for i, s := range servers {
+		masks := s.Masks()
+		secrets := s.Secrets()
+		cmasks := make([][]byte, NumClients)
+		csecrets := make([][]byte, NumClients)
+		for _, c := range clients {
+			cmasks[c.Id()] = c.Masks()[i]
+			csecrets[c.Id()] = c.Secrets()[i]
+		}
+		compareSecrets(masks, cmasks)
+		compareSecrets(secrets, csecrets)
+	}
+
+	fmt.Println("Secret shared")
 
 	return servers, clients
 }

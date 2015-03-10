@@ -52,26 +52,7 @@ func TestRounds(t *testing.T) {
 }
 
 func TestMain(m *testing.M) {
-	if servers == nil {
-		servers, clients = setup(NumServers, NumClients)
-	}
-
-	for _, c := range clients {
-		c.ShareSecret()
-	}
-
-	for i, s := range servers {
-		masks := s.Masks()
-		secrets := s.Secrets()
-		cmasks := make([][]byte, NumClients)
-		csecrets := make([][]byte, NumClients)
-		for _, c := range clients {
-			cmasks[c.Id()] = c.Masks()[i]
-			csecrets[c.Id()] = c.Secrets()[i]
-		}
-		compareSecrets(masks, cmasks)
-		compareSecrets(secrets, csecrets)
-	}
+	servers, clients = setup(NumServers, NumClients)
 
 	os.Exit(m.Run())
 }
