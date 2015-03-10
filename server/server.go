@@ -8,7 +8,7 @@ import (
 	"net"
 	"net/rpc"
 	"sync"
-	// "time"
+	//"time"
 
 	. "afs/lib" //types and utils
 
@@ -275,6 +275,7 @@ func (s *Server) gatherUploads(round int) {
 	for i := 0; i < s.totalClients; i++ {
 		allUploads[i] = <-s.rounds[round].ublockChan2
 	}
+	//fmt.Println(s.id, "done gathering", round)
 	s.rounds[round].shuffleChan <- allUploads
 }
 
@@ -284,6 +285,8 @@ func (s *Server) shuffleUploads(round int) {
 	}
 
 	allUploads := <-s.rounds[round].shuffleChan
+	//fmt.Println(s.id, "shuffle start: ", round)
+
 	//shuffle and reblind
 
 	numBlockChunks := len(allUploads[0].BC1)
@@ -358,6 +361,7 @@ func (s *Server) shuffleUploads(round int) {
 			log.Fatal("Failed requesting shuffle: ", err)
 		}
 	}
+	//fmt.Println(s.id, "shuffle done: ", round)
 }
 
 func (s *Server) shuffle(Xs [][]abstract.Point, Ys [][]abstract.Point, numChunks int) ([][]abstract.Point,
@@ -481,7 +485,7 @@ func (s *Server) RegisterDone2(numClients int, _ *int) error {
 			s.rounds[r].reqHashesRdy[i] = make(chan bool)
 		}
 
-		s.rounds[r].ublockChan2 = make(chan UpBlock, numClients)
+		s.rounds[r].ublockChan2 = make(chan UpBlock, numClients-1)
 	}
 	s.regDone = true
 	return nil
@@ -566,7 +570,7 @@ func (s *Server) UploadBlock(block *UpBlock, _ *int) error {
 func (s *Server) UploadBlock2(block *UpBlock, _*int) error {
 	round := block.Round % MaxRounds
 	s.rounds[round].ublockChan2 <- *block
-	//fmt.Println("ublockchan2", round)
+	//fmt.Println("put ublockchan2", round)
 	return nil
 }
 

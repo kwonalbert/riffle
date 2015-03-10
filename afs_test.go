@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"os"
+	"time"
 	"sync"
 
 	"testing"
@@ -25,6 +26,7 @@ func TestRounds(t *testing.T) {
 		for j := range testData[i] {
 			data := make([]byte, BlockSize)
 			rand.Read(data)
+			//data[j] = 1
 			testData[i][j] = data
 		}
 
@@ -36,16 +38,42 @@ func TestRounds(t *testing.T) {
 		wg.Add(1)
 		go func(c int) { //a client
 			defer wg.Done()
-	  		for i := 0; i < b; i++ {
-				if c == 0 {
-					fmt.Println("Round ", i)
+			var wg2 sync.WaitGroup
+			wg2.Add(1)
+			go func(c int) {
+				defer wg2.Done()
+				for i := 0; i < b; i++ {
+					k := (i + c) % NumClients
+					hash := Suite.Hash().Sum(testData[i][k])
+					clients[c].RequestBlock(c, hash)
+					if clients[c].Id() == 0 {
+						fmt.Println("requested: ", i)
+					}
 				}
-				k := (i + c) % NumClients
-				go clients[c].RequestBlock(c, Suite.Hash().Sum(testData[i][k]))
-				go clients[c].Upload()
-				res := clients[c].Download()
-				membership(res, testData[i])
-			}
+			} (c)
+
+			wg2.Add(1)
+			go func(c int) {
+				defer wg2.Done()
+				for i := 0; i < b; i++ {
+					clients[c].Upload()
+					if clients[c].Id() == 0 {
+						fmt.Println("uploaded: ", i)
+					}
+				}
+			} (c)
+
+
+			wg2.Add(1)
+			go func(c int) {
+				defer wg2.Done()
+				for i := 0; i < b; i++ {
+					res := clients[c].Download()
+					membership(res, testData[i])
+				}
+			} (c)
+
+			wg2.Wait()
 		} (c)
 	}
 	wg.Wait()
@@ -53,32 +81,33 @@ func TestRounds(t *testing.T) {
 
 func TestMain(m *testing.M) {
 	servers, clients = setup(NumServers, NumClients)
+	time.Sleep(500*time.Millisecond)
 
 	os.Exit(m.Run())
 }
 
-func TestFiles(t *testing.T) {
-	b := NumClients
-	testData := make([][][]byte, b)
-	for i := 0; i < b; i++ {
-		testData[i] = make([][]byte, NumClients)
-		for j := range testData[i] {
-			data := make([]byte, BlockSize)
-			rand.Read(data)
-			testData[i][j] = data
-		}
-	}
+// func TestFiles(t *testing.T) {
+// 	b := NumClients
+// 	testData := make([][][]byte, b)
+// 	for i := 0; i < b; i++ {
+// 		testData[i] = make([][]byte, NumClients)
+// 		for j := range testData[i] {
+// 			data := make([]byte, BlockSize)
+// 			rand.Read(data)
+// 			testData[i][j] = data
+// 		}
+// 	}
 
-	for i := range testData {
-		hashes := make([][]byte, len(testData[i]))
-		for j := range testData[i] {
-			hashes[j] = Suite.Hash().Sum(testData[i][j])
-		}
-		file := File{
-			Name: fmt.Sprintf("%d", i),
-			Hashes: hashes,
-			Blocks: testData[i],
-		}
-		fmt.Println(file)
-	}
-}
+// 	for i := range testData {
+// 		hashes := make([][]byte, len(testData[i]))
+// 		for j := range testData[i] {
+// 			hashes[j] = Suite.Hash().Sum(testData[i][j])
+// 		}
+// 		file := File{
+// 			Name: fmt.Sprintf("%d", i),
+// 			Hashes: hashes,
+// 			Blocks: testData[i],
+// 		}
+// 		fmt.Println(file)
+// 	}
+// }

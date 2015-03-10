@@ -27,8 +27,6 @@ type Client struct {
 	files           []File //files in hand
 	pieces          map[string][]byte //maps hashes to blocks
 
-	sem             chan int //semaphore for rounds
-
 	//crypto
 	g               abstract.Group
 	rand            cipher.Stream
@@ -92,7 +90,6 @@ func NewClient(addr string, servers []string, myServer string) *Client {
 		totalClients:   -1,
 
 		pieces:         make(map[string][]byte),
-		sem:            make(chan int, MaxRounds),
 
 		g:              Suite,
 		rand:           Suite.Cipher(abstract.RandomKey),
@@ -195,7 +192,6 @@ func (c *Client) RegisterBlock(block []byte) {
 ////////////////////////////////
 func (c *Client) RequestBlock(slot int, hash []byte) {
 	c.reqLock.Lock()
-	c.sem <- 0
 	round := c.reqRound % MaxRounds
 	reqs := make([][]byte, c.totalClients)
 	for i := range reqs {
@@ -232,7 +228,9 @@ func (c *Client) DownloadReqHash() [][]byte {
 		log.Fatal("Couldn't download req hashes: ", err)
 	}
 
-	//fmt.Println(c.id, c.reqHashRound, "all reqs", hashes)
+	// if c.id == 0 && c.reqRound == 0 {
+	// 	fmt.Println(c.id, c.reqHashRound, "all reqs", hashes)
+	// }
 
 	c.reqHashRound++
 	c.reqHashLock.Unlock()
@@ -258,6 +256,7 @@ func (c *Client) Upload() {
 
 	//TODO: handle unfound hash..
 	c.UploadBlock(Block{Block: match, Round: c.upRound})
+	//fmt.Println(c.id, "uploaded", c.upRound)
 	c.upRound++
 	c.upLock.Unlock()
 }
@@ -291,7 +290,6 @@ func (c *Client) Download() []byte {
 	hash := <-c.dhashes
 	block := c.DownloadBlock(hash)
 	c.downRound++
-	<-c.sem
 	c.downLock.Unlock()
 	return block
 }

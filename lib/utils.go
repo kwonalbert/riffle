@@ -2,6 +2,8 @@ package lib
 
 import (
 	"bytes"
+	"log"
+	"time"
 
 	"github.com/dedis/crypto/abstract"
 	"github.com/dedis/crypto/cipher"
@@ -148,4 +150,9 @@ func RunFunc(f func(int)) {
 			}
 		} (r)
 	}
+}
+
+func TimeTrack(start time.Time, name string) {
+	elapsed := time.Since(start)
+	log.Printf("%s took %s", name, elapsed)
 }
