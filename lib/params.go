@@ -21,5 +21,4 @@ const SecretSize = 256/8
 var ServerAddrs []string = []string{"localhost:8000", "localhost:8001"}
 const ServerPort = 8000
 
-var ClientAddrs []string = []string{"localhost:9000", "localhost:9001"}
 const ClientPort = 9000

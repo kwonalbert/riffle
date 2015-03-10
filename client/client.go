@@ -1,13 +1,12 @@
 package client
 
 import (
-	//"flag"
-	//"fmt"
+	"flag"
+	"fmt"
 	"log"
-	//"net"
 	"net/rpc"
 	"sync"
-	//"time"
+	"time"
 
 	. "afs/lib" //types and utils
 
@@ -378,11 +377,21 @@ func (c *Client) ClearHashes() {
 //MAIN
 /////////////////////////////////
 func main() {
-	// var addr *string = flag.String("a", "addr", "addr [address]")
-	// var files *string = flag.String("f", "files", "files [filenames]")
-	// var servers *string = flag.String("s", "servers", "servers [server list]")
+	var id *int = flag.Int("i", 0, "id [num]")
+	flag.Parse()
 
-	// flag.Parse()
+	c := NewClient(fmt.Sprintf("127.0.0.1:%d", 9000+*id), ServerAddrs, ServerAddrs[0])
+	c.Register(0)
+	time.Sleep(1000 * time.Millisecond)
+	c.RegisterDone()
+	c.ShareSecret()
 
-	// c := NewClient()
+	// for {
+	// 	go func(hash []byte) {
+	// 		go c.RequestBlock(c.id, hash)
+	// 		go c.Upload()
+	// 		res := c.Download()
+	// 	}
+	// }
+
 }

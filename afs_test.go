@@ -56,3 +56,29 @@ func TestMain(m *testing.M) {
 
 	os.Exit(m.Run())
 }
+
+func TestFiles(t *testing.T) {
+	b := NumClients
+	testData := make([][][]byte, b)
+	for i := 0; i < b; i++ {
+		testData[i] = make([][]byte, NumClients)
+		for j := range testData[i] {
+			data := make([]byte, BlockSize)
+			rand.Read(data)
+			testData[i][j] = data
+		}
+	}
+
+	for i := range testData {
+		hashes := make([][]byte, len(testData[i]))
+		for j := range testData[i] {
+			hashes[j] = Suite.Hash().Sum(testData[i][j])
+		}
+		file := File{
+			Name: fmt.Sprintf("%d", i),
+			Hashes: hashes,
+			Blocks: testData[i],
+		}
+		fmt.Println(file)
+	}
+}

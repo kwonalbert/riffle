@@ -1,7 +1,8 @@
 package server
 
 import (
-	// "flag"
+	"errors"
+	"flag"
 	"fmt"
 	"log"
 	"net"
@@ -150,18 +151,20 @@ func (s *Server) ConnectServers() {
 	rpcServers := make([]*rpc.Client, len(s.servers))
 	for i := range rpcServers {
 		var rpcServer *rpc.Client
-		var err error
-		if i == s.id {
-			//make a local rpc
-			addr := fmt.Sprintf("127.0.0.1:%d", s.port)
-			rpcServer, err = rpc.Dial("tcp", addr)
-		} else {
-			rpcServer, err = rpc.Dial("tcp", s.servers[i])
+		var err error = errors.New("")
+		for ; err != nil ; {
+			if i == s.id {
+				//make a local rpc
+				addr := fmt.Sprintf("127.0.0.1:%d", s.port)
+				rpcServer, err = rpc.Dial("tcp", addr)
+			} else {
+				rpcServer, err = rpc.Dial("tcp", s.servers[i])
+			}
+			if err != nil {
+				log.Fatal("Cannot establish connection")
+			}
+			rpcServers[i] = rpcServer
 		}
-		if err != nil {
-			log.Fatal("Cannot establish connection")
-		}
-		rpcServers[i] = rpcServer
 	}
 
 	var wg sync.WaitGroup
@@ -655,13 +658,13 @@ func (s *Server) Secrets() [][]byte {
 //MAIN
 /////////////////////////////////
 func main() {
-	// var addr *string = flag.String("a", "addr", "addr [address]")
-	// var id *int = flag.Int("i", "id", "id [num]")
-	// var port *int = flag.Int("p", "port", "port [num]")
-	// var servers *string = flag.Strin("s", "servers", "servers [servers list]")
+	var id *int = flag.Int("i", 0, "id [num]")
+	flag.Parse()
 
-	// var ss []string
+	s := NewServer(ServerAddrs[*id], ServerPort + *id, *id, ServerAddrs)
+	s.MainLoop()
+	s.ConnectServers()
 
-	// s := NewServer(*addr, *port, *id, ss)
-	// //s.ConnectServers()
+	for {}
 }
+
