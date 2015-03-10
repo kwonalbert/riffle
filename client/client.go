@@ -46,7 +46,7 @@ type Client struct {
 	downLock        *sync.Mutex
 
 	//downloading
-	dhashes         [][]byte //hash to download (per round)
+	dhashes         chan []byte //hash to download (per round)
 	masks           [][]byte //masks used
 	secrets         [][]byte //secret for data
 }
@@ -109,7 +109,7 @@ func NewClient(addr string, servers []string, myServer string) *Client {
 		upLock:         new(sync.Mutex),
 		downLock:       new(sync.Mutex),
 
-		dhashes:        make([][]byte, MaxRounds),
+		dhashes:        make(chan []byte, MaxRounds),
 		masks:          masks,
 		secrets:        secrets,
 	}
@@ -188,6 +188,7 @@ func (c *Client) ShareSecret() {
 func (c *Client) RegisterBlock(block []byte) {
 	hash := Suite.Hash().Sum(block)
 	c.pieces[string(hash)] = block
+	//fmt.Println(c.id, "registering", hash)
 }
 
 /////////////////////////////////
@@ -199,7 +200,7 @@ func (c *Client) RequestBlock(slot int, hash []byte) {
 	round := c.reqRound % MaxRounds
 	reqs := make([][]byte, c.totalClients)
 	for i := range reqs {
-		if i == c.id {
+		if i == slot {
 			reqs[i] = hash
 		} else {
 			reqs[i] = make([]byte, len(hash))
@@ -207,7 +208,10 @@ func (c *Client) RequestBlock(slot int, hash []byte) {
 	}
 	req := Request{Hash: reqs, Round: round}
 	cr := ClientRequest{Request: req, Id: c.id}
-	c.dhashes[round] = hash
+	c.dhashes <- hash
+
+	//fmt.Println(c.id, c.reqRound, "requesting", hash)
+
 	//TODO: xor in some secrets
 	err := c.rpcServers[c.myServer].Call("Server.RequestBlock", &cr, nil)
 	if err != nil {
@@ -228,6 +232,9 @@ func (c *Client) DownloadReqHash() [][]byte {
 	if err != nil {
 		log.Fatal("Couldn't download req hashes: ", err)
 	}
+
+	//fmt.Println(c.id, c.reqHashRound, "all reqs", hashes)
+
 	c.reqHashRound++
 	c.reqHashLock.Unlock()
 	return hashes
@@ -237,12 +244,17 @@ func (c *Client) Upload() {
 	c.upLock.Lock()
 	hashes := c.DownloadReqHash()
 	var match []byte
-	for _, h := range hashes {
+	i := -1
+	for j, h := range hashes {
 		if len(c.pieces[string(h)]) == 0 {
 			continue
 		}
 		match = c.pieces[string(h)]
+		i = j
 		break
+	}
+	if i == -1 {
+		match = make([]byte, BlockSize)
 	}
 
 	//TODO: handle unfound hash..
@@ -277,8 +289,8 @@ func (c *Client) UploadBlock(block Block) {
 ////////////////////////////////
 func (c *Client) Download() []byte {
 	c.downLock.Lock()
-	round := c.downRound % MaxRounds
-	block := c.DownloadBlock(c.dhashes[round])
+	hash := <-c.dhashes
+	block := c.DownloadBlock(hash)
 	c.downRound++
 	<-c.sem
 	c.downLock.Unlock()

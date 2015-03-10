@@ -41,8 +41,8 @@ func TestRounds(t *testing.T) {
 					fmt.Println("Round ", i)
 				}
 				k := (i + c) % NumClients
-				clients[c].RequestBlock(i, Suite.Hash().Sum(testData[i][k]))
-				clients[c].Upload()
+				go clients[c].RequestBlock(c, Suite.Hash().Sum(testData[i][k]))
+				go clients[c].Upload()
 				res := clients[c].Download()
 				membership(res, testData[i])
 			}

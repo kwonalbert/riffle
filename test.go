@@ -154,8 +154,7 @@ func download(testData [][]byte) {
 			}
 		}
 		if !found[i] {
-			panic("Didn't get all the data back")
-			//fmt.Println("Didn't get all the data back")
+			log.Fatal("Didn't get all the data back")
 		}
 	}
 }
@@ -208,5 +207,6 @@ func membership(res []byte, set [][]byte) {
 			return
 		}
 	}
+	fmt.Println("res: ", res)
 	log.Fatal("Didn't get all data back")
 }

@@ -55,7 +55,6 @@ type Round struct {
 	reqHashesRdy    []chan bool
 
 	//uploading
-	ublockChan      chan UpBlock
 	ublockChan2     chan UpBlock
 	shuffleChan     chan []UpBlock //collect all uploads together
 
@@ -88,8 +87,7 @@ func NewServer(addr string, port int, id int, servers []string) *Server {
 			reqHashes:      nil,
 			reqHashesRdy:   nil,
 
-			ublockChan:     make(chan UpBlock),
-			ublockChan2:    make(chan UpBlock),
+			ublockChan2:    nil,
 			shuffleChan:    make(chan []UpBlock),
 
 			upHashes:       nil,
@@ -143,7 +141,6 @@ func (s *Server) MainLoop() {
 	go rpcServer.Accept(l)
 
 	RunFunc(s.handleRequests)
-	RunFunc(s.handleUpload)
 	RunFunc(s.gatherUploads)
 	RunFunc(s.shuffleUploads)
 	RunFunc(s.handleResponses)
@@ -263,18 +260,6 @@ func (s *Server) handleResponses(round int) {
 		go func(i int, round int) {
 			s.rounds[round].blocksRdy[i] <- true
 		} (i, round)
-	}
-}
-
-func (s *Server) handleUpload(round int) {
-	if !s.regDone {
-		return
-	}
-
-	upBlock := <-s.rounds[round].ublockChan
-	err := s.rpcServers[0].Call("Server.UploadBlock2", upBlock, nil)
-	if err != nil {
-		log.Fatal("Couldn't send block to first server: ", err)
 	}
 }
 
@@ -492,6 +477,8 @@ func (s *Server) RegisterDone2(numClients int, _ *int) error {
 			s.rounds[r].upHashesRdy[i] = make(chan bool)
 			s.rounds[r].reqHashesRdy[i] = make(chan bool)
 		}
+
+		s.rounds[r].ublockChan2 = make(chan UpBlock, numClients)
 	}
 	s.regDone = true
 	return nil
@@ -566,14 +553,17 @@ func (s *Server) GetReqHashes(args *RequestArg, hashes *[][]byte) error {
 //Upload
 ////////////////////////////////
 func (s *Server) UploadBlock(block *UpBlock, _ *int) error {
-	round := block.Round % MaxRounds
-	s.rounds[round].ublockChan <- *block
+	err := s.rpcServers[0].Call("Server.UploadBlock2", block, nil)
+	if err != nil {
+		log.Fatal("Couldn't send block to first server: ", err)
+	}
 	return nil
 }
 
 func (s *Server) UploadBlock2(block *UpBlock, _*int) error {
 	round := block.Round % MaxRounds
 	s.rounds[round].ublockChan2 <- *block
+	//fmt.Println("ublockchan2", round)
 	return nil
 }
 
