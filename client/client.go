@@ -45,6 +45,8 @@ type Client struct {
 	upLock          *sync.Mutex
 	downLock        *sync.Mutex
 
+	ephKeys         []abstract.Point
+
 	//downloading
 	dhashes         chan []byte //hash to download (per round)
 	masks           [][]byte //masks used
@@ -111,6 +113,8 @@ func NewClient(addr string, servers []string, myServer string) *Client {
 		upLock:         new(sync.Mutex),
 		downLock:       new(sync.Mutex),
 
+		ephKeys:        make([]abstract.Point, len(servers)),
+
 		dhashes:        make(chan []byte, MaxRounds),
 		masks:          masks,
 		secrets:        secrets,
@@ -172,13 +176,16 @@ func (c *Client) ShareSecret() {
 
 			servPub1 := make([]byte, SecretSize)
 			servPub2 := make([]byte, SecretSize)
+			servPub3 := make([]byte, SecretSize)
 			call1 := rpcServer.Go("Server.ShareMask", &cs1, &servPub1, nil)
 			call2 := rpcServer.Go("Server.ShareSecret", &cs2, &servPub2, nil)
+			call3 := rpcServer.Go("Server.GetEphKey", 0, &servPub3, nil)
 			_ = <-call1.Done
 			_ = <-call2.Done
+			_ = <-call3.Done
 			c.masks[i] = MarshalPoint(c.g.Point().Mul(UnmarshalPoint(servPub1), secret1))
 			c.secrets[i] = MarshalPoint(c.g.Point().Mul(UnmarshalPoint(servPub2), secret2))
-			c.secrets[i] = make([]byte, SecretSize)
+			c.ephKeys[i] = UnmarshalPoint(servPub3)
 		} (i, rpcServer)
 	}
 	wg.Wait()
@@ -296,17 +303,34 @@ func (c *Client) UploadPieces() {
 }
 
 func (c *Client) UploadBlock(block Block) {
-	bc1s, bc2s := Encrypt(c.g, block.Block, c.pks)
-	upblock := UpBlock {
-		BC1: make([][]byte, len(bc1s)),
-		BC2: make([][]byte, len(bc2s)),
+	h := Suite.Hash()
+	h.Write(block.Block)
+	hash := h.Sum(nil)
+	hc1s, hc2s := Encrypt(c.g, hash, c.pks)
 
+	gen := c.g.Point().Base()
+	secret := c.g.Secret().Pick(c.rand)
+	public := c.g.Point().Mul(gen, secret)
+	bs := block.Block
+	for i := range c.servers {
+		key := MarshalPoint(c.g.Point().Mul(c.ephKeys[i], secret))
+		bs = CounterAES(key, bs)
+	}
+
+	dh1, dh2 := EncryptPoint(c.g, public, c.pks[0])
+
+	upblock := UpBlock {
+		HC1: make([][]byte, len(hc1s)),
+		HC2: make([][]byte, len(hc2s)),
+		DH1: MarshalPoint(dh1),
+		DH2: MarshalPoint(dh2),
+		BC:  bs,
 		Round: block.Round,
 	}
 
-	for i := range bc1s {
-		upblock.BC1[i] = MarshalPoint(bc1s[i])
-		upblock.BC2[i] = MarshalPoint(bc2s[i])
+	for i := range hc1s {
+		upblock.HC1[i] = MarshalPoint(hc1s[i])
+		upblock.HC2[i] = MarshalPoint(hc2s[i])
 	}
 
 	err := c.rpcServers[c.myServer].Call("Server.UploadBlock", &upblock, nil)

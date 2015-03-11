@@ -34,6 +34,7 @@ type Server struct {
 	pk              abstract.Point
 	pks             []abstract.Point //all servers pks
 	nextPk          abstract.Point
+	ephSecret       abstract.Secret
 
 	//clients
 	clients         []string //clients connected here
@@ -43,6 +44,7 @@ type Server struct {
 	masks           [][]byte //clients' masks for PIR
 	secrets         [][]byte //shared secret used to xor
 
+	//all rounds
 	rounds          []*Round
 }
 
@@ -77,6 +79,7 @@ func NewServer(addr string, port int, id int, servers []string) *Server {
 	rand := Suite.Cipher(abstract.RandomKey)
 	sk := Suite.Secret().Pick(rand)
 	pk := Suite.Point().Mul(nil, sk)
+	ephSecret := Suite.Secret().Pick(rand)
 
 	rounds := make([]*Round, MaxRounds)
 
@@ -113,6 +116,7 @@ func NewServer(addr string, port int, id int, servers []string) *Server {
 		sk:             sk,
 		pk:             pk,
 		pks:            make([]abstract.Point, len(servers)),
+		ephSecret:      ephSecret,
 
 		clients:        []string{},
 		clientMap:      make(map[int]int),
@@ -289,51 +293,81 @@ func (s *Server) shuffleUploads(round int) {
 
 	//shuffle and reblind
 
-	numBlockChunks := len(allUploads[0].BC1)
+	hashChunks := len(allUploads[0].HC1)
 	for _, upload := range allUploads {
-		if numBlockChunks != len(upload.BC1)  {
+		if hashChunks != len(upload.HC1)  {
 			panic("Different chunk lengths")
 		}
 	}
 
-	// numHashChunks := len(allUploads[0].HC1)
-	// for _, upload := range allUploads {
-	// 	if numBlockChunks != len(upload.HC1)  {
-	// 		panic("Different chunk lengths")
-	// 	}
-	// }
+	HXs := make([][]abstract.Point, hashChunks)
+	HYs := make([][]abstract.Point, hashChunks)
 
-	BXs := make([][]abstract.Point, numBlockChunks)
-	BYs := make([][]abstract.Point, numBlockChunks)
-	//HXs := make([][]abstract.Point, numHashChunks)
-	//HYs := make([][]abstract.Point, numHashChunks)
-
-	for i := range BXs {
-		BXs[i] = make([]abstract.Point, s.totalClients)
-		BYs[i] = make([]abstract.Point, s.totalClients)
+	for i := range HXs {
+		HXs[i] = make([]abstract.Point, s.totalClients)
+		HYs[i] = make([]abstract.Point, s.totalClients)
 		for j := 0; j < s.totalClients; j++ {
-			BXs[i][j] = UnmarshalPoint(allUploads[j].BC1[i])
-			BYs[i][j] = UnmarshalPoint(allUploads[j].BC2[i])
+			HXs[i][j] = UnmarshalPoint(allUploads[j].HC1[i])
+			HYs[i][j] = UnmarshalPoint(allUploads[j].HC2[i])
 		}
 	}
 
+	DX := make([]abstract.Point, s.totalClients)
+	DY := make([]abstract.Point, s.totalClients)
+	for j := 0; j < s.totalClients; j++ {
+		DX[j] = UnmarshalPoint(allUploads[j].DH1)
+		DY[j] = UnmarshalPoint(allUploads[j].DH2)
+	}
+
 	//TODO: need to send ybar and proofs out out eventually
-	Xbars, _, decs, _ := s.shuffle(BXs, BYs, numBlockChunks)
+	pi := GeneratePI(s.totalClients, s.rand)
+
+	var HXbars [][]abstract.Point
+	var Hdecs [][]abstract.Point
+	ephKeys := make([]abstract.Point, s.totalClients)
+	decBlocks := make([][]byte, s.totalClients)
+
+	var shuffleWG sync.WaitGroup
+	shuffleWG.Add(2)
+	go func() {
+		defer shuffleWG.Done()
+		HXbars, _, Hdecs, _ = s.shuffle(pi, HXs, HYs, hashChunks)
+	} ()
+	go func() {
+		defer shuffleWG.Done()
+		var aesWG sync.WaitGroup
+		for j := 0; j < s.totalClients; j++ {
+			aesWG.Add(1)
+			go func(j int) {
+				defer aesWG.Done()
+				ephKey := Decrypt(s.g, DX[j], DY[j], s.sk)
+				key := MarshalPoint(s.g.Point().Mul(ephKey, s.ephSecret))
+				//shuffle using pi
+				decBlocks[pi[j]] = CounterAES(key, allUploads[j].BC)
+				ephKeys[pi[j]] = ephKey
+			} (j)
+		}
+		aesWG.Wait()
+	} ()
+	shuffleWG.Wait()
 
 	if s.id == len(s.servers) - 1 {
 		//last server to shuffle, broadcast
+		hashes := make([][]byte, s.totalClients)
 		blocks := make([]Block, s.totalClients)
+		//TODO: check hashes
 		for i := range blocks {
-			block := []byte{}
-			for j := range decs {
-				msg, err := decs[j][i].Data()
+			hash := []byte{}
+			for j := range Hdecs {
+				msg, err := Hdecs[j][i].Data()
 				if err != nil {
 					log.Fatal("Could not decrypt: ", err)
 				}
-				block = append(block, msg...)
+				hash = append(hash, msg...)
 			}
+			hashes[i] = hash
 			blocks[i] = Block {
-				Block: block,
+				Block: decBlocks[i],
 				Round: round,
 			}
 		}
@@ -352,22 +386,26 @@ func (s *Server) shuffleUploads(round int) {
 		wg.Wait()
 	} else {
 		for i := range allUploads {
-			for j := range allUploads[i].BC1 {
-				allUploads[i].BC1[j] = MarshalPoint(Xbars[j][i])
-				allUploads[i].BC2[j] = MarshalPoint(decs[j][i])
+			for j := range allUploads[i].HC1 {
+				allUploads[i].HC1[j] = MarshalPoint(HXbars[j][i])
+				allUploads[i].HC2[j] = MarshalPoint(Hdecs[j][i])
 			}
+			dh1, dh2 := EncryptPoint(s.g, ephKeys[i], s.pks[s.id+1])
+			allUploads[i].DH1 = MarshalPoint(dh1)
+			allUploads[i].DH2 = MarshalPoint(dh2)
+			allUploads[i].BC = decBlocks[i]
 		}
 		err := s.rpcServers[s.id+1].Call("Server.ShuffleBlocks", allUploads, nil)
 		if err != nil {
 			log.Fatal("Failed requesting shuffle: ", err)
 		}
+
 	}
 	//fmt.Println(s.id, "shuffle done: ", round)
 }
 
-func (s *Server) shuffle(Xs [][]abstract.Point, Ys [][]abstract.Point, numChunks int) ([][]abstract.Point,
+func (s *Server) shuffle(pi []int, Xs [][]abstract.Point, Ys [][]abstract.Point, numChunks int) ([][]abstract.Point,
 	[][]abstract.Point, [][]abstract.Point, [][]byte) {
-	pi := GeneratePI(s.totalClients, s.rand)
 	Xbars := make([][]abstract.Point, numChunks)
 	Ybars := make([][]abstract.Point, numChunks)
 	decs := make([][]abstract.Point, numChunks)
@@ -520,7 +558,12 @@ func (s *Server) ShareMask(clientDH *ClientDH, serverPub *[]byte) error {
 func (s *Server) ShareSecret(clientDH *ClientDH, serverPub *[]byte) error {
 	pub, shared := s.shareSecret(UnmarshalPoint(clientDH.Public))
 	s.secrets[clientDH.Id] = MarshalPoint(shared)
-	s.secrets[clientDH.Id] = make([]byte, SecretSize)
+	*serverPub = MarshalPoint(pub)
+	return nil
+}
+
+func (s *Server) GetEphKey(_ int, serverPub *[]byte) error {
+	pub := s.g.Point().Mul(s.g.Point().Base(), s.ephSecret)
 	*serverPub = MarshalPoint(pub)
 	return nil
 }

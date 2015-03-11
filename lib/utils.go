@@ -2,6 +2,8 @@ package lib
 
 import (
 	"bytes"
+	"crypto/aes"
+	"encoding/binary"
 	"log"
 	"time"
 	//"os"
@@ -123,9 +125,36 @@ func Encrypt(g abstract.Group, msg []byte, pks []abstract.Point) ([]abstract.Poi
 	return c1s, c2s
 }
 
+func EncryptPoint(g abstract.Group, msgPt abstract.Point, pk abstract.Point) (abstract.Point, abstract.Point) {
+	k := g.Secret().Pick(random.Stream)
+	c1 := g.Point().Mul(nil, k)
+	c2 := g.Point().Mul(pk, k)
+	c2 = c2.Add(c2, msgPt)
+	return c1, c2
+}
 
 func Decrypt(g abstract.Group, c1 abstract.Point, c2 abstract.Point, sk abstract.Secret) abstract.Point {
 	return g.Point().Sub(c2, g.Point().Mul(c1, sk))
+}
+
+func CounterAES(key []byte, block []byte) []byte {
+	cipher, err := aes.NewCipher(key)
+	if err != nil {
+		log.Fatal("Could not create encryptor")
+	}
+
+	var counter uint64 = 0
+	res := []byte{}
+	for i := 0; i < len(block); i += len(key) {
+		buf := make([]byte, len(key))
+		out := make([]byte, len(key))
+		binary.PutUvarint(buf, counter)
+		cipher.Encrypt(out, buf)
+		Xor(block[i:i+len(key)-1], out)
+		res = append(res, out...)
+		counter++
+	}
+	return res
 }
 
 func MarshalPoint(pt abstract.Point) []byte {

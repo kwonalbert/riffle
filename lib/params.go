@@ -15,7 +15,7 @@ const MaxRounds = 3
 
 //sizes in bytes
 const HashSize = 32
-const BlockSize = 22 //1KB for testing;
+const BlockSize = 1024 //1KB for testing;
 //const BlockSize = 1024*1024 //1MB
 const SecretSize = 256/8
 
