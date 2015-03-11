@@ -2,10 +2,12 @@ package lib
 
 import (
 	"github.com/dedis/crypto/abstract"
+	//"github.com/dedis/crypto/openssl"
 	"github.com/dedis/crypto/edwards"
 )
 
 var Suite abstract.Suite = edwards.NewAES128SHA256Ed25519(false)
+//var Suite abstract.Suite = openssl.NewAES128SHA256P256()
 const NumClients = 10
 const NumServers = 3
 

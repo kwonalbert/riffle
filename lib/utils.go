@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"log"
 	"time"
+	//"os"
 
 	"github.com/dedis/crypto/abstract"
 	"github.com/dedis/crypto/cipher"
@@ -157,32 +158,32 @@ func TimeTrack(start time.Time, name string) {
 	log.Printf("%s took %s", name, elapsed)
 }
 
-func NewFile(path string) (*File, error) {
-	f := os.Open(path)
-	defer f.Close()
+// func NewFile(path string) (*File, error) {
+// 	f := os.Open(path)
+// 	defer f.Close()
 
-	fi, err := f.Stat()
-	if err != nil {
-		return nil, err
-	}
-	blocks := (fi.Size() + BlockSize - 1) / BlockSize
+// 	fi, err := f.Stat()
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	blocks := (fi.Size() + BlockSize - 1) / BlockSize
 
-	x := &File{
-		Name: path,
-		Hashes: make([][]byte, blocks),
-		Blocks: make([][]byte, blocks),
-	}
+// 	x := &File{
+// 		Name: path,
+// 		Hashes: make([][]byte, blocks),
+// 		Blocks: make([][]byte, blocks),
+// 	}
 
-	for i := 0; i < blocks; i++ {
-		x.Blocks[i] = make([]byte, BlockSize)
-		err, _ := f.Read(x.Blocks[i])
-		if err != nil {
-			return nil, err
-		}
-		x.Hashes[i] = make([]byte, sha256.Size)
-		sum := sha256.Sum256(x.Blocks[i])
-		copy(x.Hashes[i], sum[:])
-	}
+// 	for i := 0; i < blocks; i++ {
+// 		x.Blocks[i] = make([]byte, BlockSize)
+// 		err, _ := f.Read(x.Blocks[i])
+// 		if err != nil {
+// 			return nil, err
+// 		}
+// 		x.Hashes[i] = make([]byte, HashSize)
+// 		sum := Suite.Hash().Sum(x.Blocks[i])
+// 		copy(x.Hashes[i], sum[:])
+// 	}
 
-	return x, nil
-}
+// 	return x, nil
+// }

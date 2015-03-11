@@ -3,6 +3,7 @@ package client
 import (
 	"flag"
 	"fmt"
+	"os"
 	"log"
 	"net/rpc"
 	"sync"
@@ -24,8 +25,10 @@ type Client struct {
 	myServer        int //server downloading from (using PIR)
 	totalClients    int
 
-	files           []File //files in hand
-	pieces          map[string][]byte //maps hashes to blocks
+	files           map[string]*File //files in hand; filename to hashes
+	osFiles         map[string]*os.File
+
+	testPieces      map[string][]byte //used only for testing
 
 	//crypto
 	g               abstract.Group
@@ -89,7 +92,10 @@ func NewClient(addr string, servers []string, myServer string) *Client {
 		myServer:       myServerIdx,
 		totalClients:   -1,
 
-		pieces:         make(map[string][]byte),
+		files:          make(map[string]*File),
+		osFiles:        make(map[string]*os.File),
+
+		testPieces:     make(map[string][]byte),
 
 		g:              Suite,
 		rand:           Suite.Cipher(abstract.RandomKey),
@@ -179,15 +185,6 @@ func (c *Client) ShareSecret() {
 }
 
 /////////////////////////////////
-//Internal
-////////////////////////////////
-func (c *Client) RegisterBlock(block []byte) {
-	hash := Suite.Hash().Sum(block)
-	c.pieces[string(hash)] = block
-	//fmt.Println(c.id, "registering", hash)
-}
-
-/////////////////////////////////
 //Request
 ////////////////////////////////
 func (c *Client) RequestBlock(slot int, hash []byte) {
@@ -238,23 +235,56 @@ func (c *Client) DownloadReqHash() [][]byte {
 }
 
 func (c *Client) Upload() {
+	//okay to lock; bandwidth is still near maximized
 	c.upLock.Lock()
 	hashes := c.DownloadReqHash()
 	var match []byte
-	i := -1
-	for j, h := range hashes {
-		if len(c.pieces[string(h)]) == 0 {
+	var name string
+	var offset int64 = -1
+	for n, f := range c.files {
+		fhashes := f.Hashes
+		for _, h := range hashes {
+			o, ok := fhashes[string(h)]
+			if ok {
+				offset = o
+			}
+		}
+		//for now, just do the first one you find
+		if offset != -1 {
+			name = n
+			break
+		}
+	}
+	match = make([]byte, BlockSize)
+	if offset != -1 {
+		f := c.osFiles[name]
+		_, err := f.ReadAt(match, offset)
+		if err != nil {
+			log.Fatal("Failed reading file", name, ":", err)
+		}
+	}
+	c.UploadBlock(Block{Block: match, Round: c.upRound})
+	c.upRound++
+	c.upLock.Unlock()
+}
+
+func (c *Client) UploadPieces() {
+	c.upLock.Lock()
+	hashes := c.DownloadReqHash()
+	var match []byte = nil
+	for _, h := range hashes {
+		if len(c.testPieces[string(h)]) == 0 {
 			continue
 		}
-		match = c.pieces[string(h)]
-		i = j
+		match = c.testPieces[string(h)]
 		break
-	}
-	if i == -1 {
-		match = make([]byte, BlockSize)
 	}
 
 	//TODO: handle unfound hash..
+	if match == nil {
+		match = make([]byte, BlockSize)
+	}
+
 	c.UploadBlock(Block{Block: match, Round: c.upRound})
 	//fmt.Println(c.id, "uploaded", c.upRound)
 	c.upRound++
@@ -350,6 +380,11 @@ func (c *Client) DownloadSlot(slot int) []byte {
 /////////////////////////////////
 //Misc (mostly for testing)
 ////////////////////////////////
+func (c *Client) RegisterBlock(block []byte) {
+	hash := Suite.Hash().Sum(block)
+	c.testPieces[string(hash)] = block
+	//fmt.Println(c.id, "registering", hash)
+}
 
 func (c *Client) Id() int {
 	return c.id
