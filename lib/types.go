@@ -7,6 +7,7 @@ type File struct {
 }
 
 type Block struct {
+	Hash            []byte
 	Block           []byte
 	Round           int
 }

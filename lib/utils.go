@@ -2,6 +2,7 @@ package lib
 
 import (
 	"bytes"
+	goCipher "crypto/cipher"
 	"crypto/aes"
 	"encoding/binary"
 	"log"
@@ -84,7 +85,19 @@ L:
         return response
 }
 
-func GeneratePI(size int, rand cipher.Stream) []int{
+func SliceEquals(X, Y []byte) bool {
+	if len(X) != len(Y) {
+		return false
+	}
+	for i := range X {
+		if X[i] != Y[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func GeneratePI(size int, rand cipher.Stream) []int {
 	// Pick a random permutation
 	pi := make([]int, size)
 	for i := 0; i < size; i++ {	// Initialize a trivial permutation
@@ -138,23 +151,34 @@ func Decrypt(g abstract.Group, c1 abstract.Point, c2 abstract.Point, sk abstract
 }
 
 func CounterAES(key []byte, block []byte) []byte {
-	cipher, err := aes.NewCipher(key)
+	aesCipher, err := aes.NewCipher(key)
 	if err != nil {
 		log.Fatal("Could not create encryptor")
 	}
 
+	ciphertext := make([]byte, len(block))
 	var counter uint64 = 0
-	res := []byte{}
-	for i := 0; i < len(block); i += len(key) {
-		buf := make([]byte, len(key))
-		out := make([]byte, len(key))
-		binary.PutUvarint(buf, counter)
-		cipher.Encrypt(out, buf)
-		Xor(block[i:i+len(key)-1], out)
-		res = append(res, out...)
-		counter++
+	iv := make([]byte, aes.BlockSize)
+	binary.PutUvarint(iv, counter)
+
+	stream := goCipher.NewCTR(aesCipher, iv)
+	stream.XORKeyStream(ciphertext, block)
+
+	return ciphertext
+}
+
+func Membership(res []byte, set [][]byte) int {
+	for i := range set {
+		same := true
+		same = same && (len(res) == len(set[i]))
+		for k := range res {
+			same = same && (set[i][k] == res[k])
+		}
+		if same {
+			return i
+		}
 	}
-	return res
+	return -1
 }
 
 func MarshalPoint(pt abstract.Point) []byte {

@@ -209,7 +209,9 @@ func (c *Client) RequestBlock(slot int, hash []byte) {
 	cr := ClientRequest{Request: req, Id: c.id}
 	c.dhashes <- hash
 
-	//fmt.Println(c.id, c.reqRound, "requesting", hash)
+	// if c.reqRound == 0 {
+	// 	fmt.Println(c.id, c.reqRound, "requesting", hash)
+	// }
 
 	//TODO: xor in some secrets
 	err := c.rpcServers[c.myServer].Call("Server.RequestBlock", &cr, nil)
@@ -289,7 +291,9 @@ func (c *Client) UploadPieces() {
 
 	// h := Suite.Hash()
 	// h.Write(match)
-	// fmt.Println(c.id, "uploading", h.Sum(nil))
+	// if c.upRound == 0 {
+	// 	fmt.Println(c.id, "uploading", match, h.Sum(nil))
+	// }
 
 	//TODO: handle unfound hash..
 	if match == nil {
@@ -314,11 +318,12 @@ func (c *Client) UploadBlock(block Block) {
 	bs := block.Block
 	for i := range c.servers {
 		key := MarshalPoint(c.g.Point().Mul(c.ephKeys[i], secret))
+		//fmt.Println(c.id, "client key", c.upRound, i, key)
 		bs = CounterAES(key, bs)
 	}
 
 	dh1, dh2 := EncryptPoint(c.g, public, c.pks[0])
-
+	//fmt.Println(c.id, "client pt", c.upRound, MarshalPoint(public))
 	upblock := UpBlock {
 		HC1: make([][]byte, len(hc1s)),
 		HC2: make([][]byte, len(hc2s)),
@@ -362,17 +367,14 @@ func (c *Client) DownloadBlock(hash []byte) []byte {
 
 	//fmt.Println(c.id, c.downRound, "down hashes", hashes)
 
-	for i := range hashes {
-		found := true
-		for j := range hash {
-			found = found && (hash[j] == hashes[i][j])
-		}
-		if found {
-			return c.DownloadSlot(i)
-		}
+	idx := Membership(hash, hashes)
+
+	if idx == -1 {
+		//TODO: handle unfound hash..
+		return make([]byte, 0)
+	} else {
+		return c.DownloadSlot(idx)
 	}
-	//TODO: handle unfound hash..
-	return make([]byte, 0)
 }
 
 func (c *Client) DownloadSlot(slot int) []byte {

@@ -340,11 +340,13 @@ func (s *Server) shuffleUploads(round int) {
 			aesWG.Add(1)
 			go func(j int) {
 				defer aesWG.Done()
-				ephKey := Decrypt(s.g, DX[j], DY[j], s.sk)
+				ephKey := Decrypt(s.g, DX[pi[j]], DY[pi[j]], s.sk)
 				key := MarshalPoint(s.g.Point().Mul(ephKey, s.ephSecret))
+				//fmt.Println("server eph", s.id, MarshalPoint(ephKey))
+				//fmt.Println("server key", s.id, key)
 				//shuffle using pi
-				decBlocks[pi[j]] = CounterAES(key, allUploads[j].BC)
-				ephKeys[pi[j]] = ephKey
+				decBlocks[j] = CounterAES(key, allUploads[pi[j]].BC)
+				ephKeys[j] = ephKey
 			} (j)
 		}
 		aesWG.Wait()
@@ -367,11 +369,12 @@ func (s *Server) shuffleUploads(round int) {
 			}
 			hashes[i] = hash
 			blocks[i] = Block {
+				Hash:  hash,
 				Block: decBlocks[i],
 				Round: round,
 			}
+			//fmt.Println(round, "final block: ", decBlocks[i], hashes[i])
 		}
-		//fmt.Println(round, "final blocks: ", blocks)
 		var wg sync.WaitGroup
 		for _, rpcServer := range s.rpcServers {
 			wg.Add(1)
@@ -676,7 +679,12 @@ func (s *Server) PutUploadedBlocks(blocks *[]Block, _ *int) error {
 	for i := range *blocks {
 		h := Suite.Hash()
 		h.Write((*blocks)[i].Block)
-		s.rounds[round].upHashes[i] = h.Sum(nil)
+		hash := h.Sum(nil)
+		s.rounds[round].upHashes[i] = hash
+		//fmt.Println("block", (*blocks)[i].Block, s.rounds[round].upHashes[i])
+		if !SliceEquals(hash, (*blocks)[i].Hash) {
+			log.Fatal("Hash mismatch!")
+		}
 	}
 
 	for i := range s.rounds[round].upHashesRdy {

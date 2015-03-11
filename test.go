@@ -201,18 +201,3 @@ func downloadBlock(testData [][]byte) {
 		}
 	}
 }
-
-func membership(res []byte, set [][]byte) {
-	for i := range set {
-		same := true
-		same = same && (len(res) == len(set[i]))
-		for k := range res {
-			same = same && (set[i][k] == res[k])
-		}
-		if same {
-			return
-		}
-	}
-	fmt.Println("res: ", res)
-	log.Fatal("Didn't get all data back")
-}
