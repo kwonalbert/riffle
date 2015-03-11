@@ -280,13 +280,17 @@ func (c *Client) UploadPieces() {
 		break
 	}
 
+	// h := Suite.Hash()
+	// h.Write(match)
+	// fmt.Println(c.id, "uploading", h.Sum(nil))
+
 	//TODO: handle unfound hash..
 	if match == nil {
 		match = make([]byte, BlockSize)
+		fmt.Println(c.id, "unfound", hashes)
 	}
 
 	c.UploadBlock(Block{Block: match, Round: c.upRound})
-	//fmt.Println(c.id, "uploaded", c.upRound)
 	c.upRound++
 	c.upLock.Unlock()
 }
@@ -331,6 +335,8 @@ func (c *Client) DownloadBlock(hash []byte) []byte {
 	if err != nil {
 		log.Fatal("Couldn't download up hashes: ", err)
 	}
+
+	//fmt.Println(c.id, c.downRound, "down hashes", hashes)
 
 	for i := range hashes {
 		found := true
@@ -381,7 +387,9 @@ func (c *Client) DownloadSlot(slot int) []byte {
 //Misc (mostly for testing)
 ////////////////////////////////
 func (c *Client) RegisterBlock(block []byte) {
-	hash := Suite.Hash().Sum(block)
+	h := Suite.Hash()
+	h.Write(block)
+	hash := h.Sum(nil)
 	c.testPieces[string(hash)] = block
 	//fmt.Println(c.id, "registering", hash)
 }

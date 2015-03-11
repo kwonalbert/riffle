@@ -43,8 +43,13 @@ func TestRounds(t *testing.T) {
 			go func(c int) {
 				defer wg2.Done()
 				for i := 0; i < b; i++ {
+					// if clients[c].Id() == 0 {
+					// 	fmt.Println("Round: ", i)
+					// }
 					k := (i + c) % NumClients
-					hash := Suite.Hash().Sum(testData[i][k])
+					h := Suite.Hash()
+					h.Write(testData[i][k])
+					hash := h.Sum(nil)
 					clients[c].RequestBlock(c, hash)
 					if clients[c].Id() == 0 {
 						fmt.Println("requested: ", i)
@@ -81,7 +86,7 @@ func TestRounds(t *testing.T) {
 
 func TestMain(m *testing.M) {
 	servers, clients = setup(NumServers, NumClients)
-	time.Sleep(500*time.Millisecond)
+	time.Sleep(1000*time.Millisecond)
 
 	os.Exit(m.Run())
 }

@@ -337,6 +337,7 @@ func (s *Server) shuffleUploads(round int) {
 				Round: round,
 			}
 		}
+		//fmt.Println(round, "final blocks: ", blocks)
 		var wg sync.WaitGroup
 		for _, rpcServer := range s.rpcServers {
 			wg.Add(1)
@@ -630,7 +631,9 @@ func (s *Server) PutUploadedBlocks(blocks *[]Block, _ *int) error {
 	//V1: hash here
 	round := (*blocks)[0].Round % MaxRounds
 	for i := range *blocks {
-		s.rounds[round].upHashes[i] = Suite.Hash().Sum((*blocks)[i].Block)
+		h := Suite.Hash()
+		h.Write((*blocks)[i].Block)
+		s.rounds[round].upHashes[i] = h.Sum(nil)
 	}
 
 	for i := range s.rounds[round].upHashesRdy {
