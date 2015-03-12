@@ -9,7 +9,7 @@ import (
 var Suite abstract.Suite = edwards.NewAES128SHA256Ed25519(false)
 //var Suite abstract.Suite = openssl.NewAES128SHA256P256()
 const NumClients = 5
-const NumServers = 3
+const NumServers = 2
 
 const MaxRounds = 3
 

@@ -27,14 +27,16 @@ func setup(numServers int, numClients int) ([]*Server, []*Client) {
 	fmt.Println("Starting servers")
 	var wg sync.WaitGroup
 	for i := range ss {
-		s := NewServer(ss[i], 8000+i, i, ss)
-		servers[i] = s
-		s.MainLoop()
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			s := NewServer(ss[i], 8000+i, i, ss)
+			servers[i] = s
+			s.MainLoop()
+			s.ConnectServers()
+		} (i)
 	}
-
-	for _, s := range servers {
-		s.ConnectServers()
-	}
+	wg.Wait()
 
 	fmt.Println("Registering Clients")
 	for i := range cs {
@@ -44,21 +46,13 @@ func setup(numServers int, numClients int) ([]*Server, []*Client) {
 			c := NewClient(fmt.Sprintf("127.0.0.1:%d", 9000+i), ss, "127.0.0.1:8000")
 			clients[i] = c
 			c.Register(0)
+			c.RegisterDone()
+			c.ShareSecret()
 		} (i)
 	}
 	wg.Wait()
 
-	fmt.Println("Created clients")
-
-	for _, c := range clients {
-		c.RegisterDone()
-	}
-
 	fmt.Println("Done Registration")
-
-	for _, c := range clients {
-		c.ShareSecret()
-	}
 
 	for i, s := range servers {
 		masks := s.Masks()

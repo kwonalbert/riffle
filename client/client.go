@@ -7,7 +7,6 @@ import (
 	"log"
 	"net/rpc"
 	"sync"
-	"time"
 
 	. "afs/lib" //types and utils
 
@@ -250,6 +249,7 @@ func (c *Client) Upload() {
 	var match []byte
 	var name string
 	var offset int64 = -1
+	//TODO: probably replace with hash map mapping hashes to file names
 	for n, f := range c.files {
 		fhashes := f.Hashes
 		for _, h := range hashes {
@@ -445,20 +445,65 @@ func (c *Client) ClearHashes() {
 /////////////////////////////////
 func main() {
 	var id *int = flag.Int("i", 0, "id [num]")
+	var wf *string = flag.String("w", "", "wanted [file]") //torrent file
+	var f *string = flag.String("f", "", "file [file]") //file in possession
 	flag.Parse()
 
 	c := NewClient(fmt.Sprintf("127.0.0.1:%d", 9000+*id), ServerAddrs, ServerAddrs[0])
 	c.Register(0)
-	time.Sleep(1000 * time.Millisecond)
 	c.RegisterDone()
 	c.ShareSecret()
 
-	// for {
-	// 	go func(hash []byte) {
-	// 		go c.RequestBlock(c.id, hash)
-	// 		go c.Upload()
-	// 		res := c.Download()
-	// 	}
-	// }
+	file, err := NewFile(*f)
+	if err != nil {
+		log.Fatal("Failed reading the file in hand", err)
+	}
+	c.files[*f] = file
+	c.osFiles[*f], _ = os.Open(*f)
+
+	wanted, err := NewDesc(*wf)
+	if err != nil {
+		log.Fatal("Failed reading the torrent file", err)
+	}
+
+	newFile := fmt.Sprintf("%s.file", *wf)
+	nf, err := os.Create(newFile)
+	if err != nil {
+		log.Fatal("Failed creating dest file", err)
+	}
+
+	var wg sync.WaitGroup
+	for {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for k, _ := range wanted {
+				c.RequestBlock(c.id, []byte(k))
+			}
+		} ()
+
+		//wg.Add(1)
+		go func() {
+			//defer wg.Done()
+			for {
+				c.Upload()
+			}
+		} ()
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for _, _ = range wanted {
+				res := c.Download()
+				h := Suite.Hash()
+				h.Write(res)
+				hash := h.Sum(nil)
+				offset := wanted[string(hash)]
+				nf.WriteAt(res, offset)
+			}
+		}()
+
+		wg.Wait()
+	}
 
 }

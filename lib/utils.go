@@ -2,12 +2,13 @@ package lib
 
 import (
 	"bytes"
+	"errors"
 	goCipher "crypto/cipher"
 	"crypto/aes"
 	"encoding/binary"
 	"log"
 	"time"
-	//"os"
+	"os"
 
 	"github.com/dedis/crypto/abstract"
 	"github.com/dedis/crypto/cipher"
@@ -211,32 +212,64 @@ func TimeTrack(start time.Time, name string) {
 	log.Printf("%s took %s", name, elapsed)
 }
 
-// func NewFile(path string) (*File, error) {
-// 	f := os.Open(path)
-// 	defer f.Close()
+func NewDesc(path string) (map[string]int64, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		log.Fatal("Failed opening file", path, err)
+	}
+	defer f.Close()
 
-// 	fi, err := f.Stat()
-// 	if err != nil {
-// 		return nil, err
-// 	}
-// 	blocks := (fi.Size() + BlockSize - 1) / BlockSize
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if fi.Size() % HashSize != 0 {
+		return nil, errors.New("Misformatted file")
+	}
+	numHashes := fi.Size() / HashSize
 
-// 	x := &File{
-// 		Name: path,
-// 		Hashes: make([][]byte, blocks),
-// 		Blocks: make([][]byte, blocks),
-// 	}
+	hashes := make(map[string]int64)
 
-// 	for i := 0; i < blocks; i++ {
-// 		x.Blocks[i] = make([]byte, BlockSize)
-// 		err, _ := f.Read(x.Blocks[i])
-// 		if err != nil {
-// 			return nil, err
-// 		}
-// 		x.Hashes[i] = make([]byte, HashSize)
-// 		sum := Suite.Hash().Sum(x.Blocks[i])
-// 		copy(x.Hashes[i], sum[:])
-// 	}
+	for i := 0; int64(i) < numHashes; i++ {
+		hash := make([]byte, HashSize)
+		_, err := f.Read(hash)
+		if err != nil {
+			log.Fatal("Failed reading file", err)
+		}
+		hashes[string(hash)] = int64(i * BlockSize)
+	}
 
-// 	return x, nil
-// }
+	return hashes, nil
+}
+
+func NewFile(path string) (*File, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		log.Fatal("Failed opening file", path, err)
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	blocks := (fi.Size() + BlockSize - 1) / BlockSize
+
+	x := &File{
+		Name: path,
+		Hashes: make(map[string]int64, blocks),
+	}
+
+	for i := 0; int64(i) < blocks; i++ {
+		tmp := make([]byte, BlockSize)
+		_, err := f.Read(tmp)
+		if err != nil {
+			log.Fatal("Failed reading file", err)
+		}
+		h := Suite.Hash()
+		h.Write(tmp)
+		x.Hashes[string(h.Sum(nil))] = int64((i * BlockSize))
+	}
+
+	return x, nil
+}

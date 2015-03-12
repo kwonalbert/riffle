@@ -3,7 +3,6 @@ package lib
 type File struct {
 	Name            string
 	Hashes          map[string]int64 //maps hash to offset
-	//Blocks          [][]byte; read by offset instead
 }
 
 type Block struct {

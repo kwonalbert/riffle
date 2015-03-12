@@ -25,6 +25,7 @@ type Server struct {
 	servers         []string //other servers
 	rpcServers      []*rpc.Client
 	regLock         []*sync.Mutex //registration mutex
+	regChan         chan bool
 	regDone         bool
 
 	//crypto
@@ -109,6 +110,7 @@ func NewServer(addr string, port int, id int, servers []string) *Server {
 		id:             id,
 		servers:        servers,
 		regLock:        []*sync.Mutex{new(sync.Mutex), new(sync.Mutex)},
+		regChan:        make(chan bool, NumClients),
 		regDone:        false,
 
 		g:              Suite,
@@ -149,51 +151,6 @@ func (s *Server) MainLoop() {
 	RunFunc(s.gatherUploads)
 	RunFunc(s.shuffleUploads)
 	RunFunc(s.handleResponses)
-}
-
-func (s *Server) ConnectServers() {
-	rpcServers := make([]*rpc.Client, len(s.servers))
-	for i := range rpcServers {
-		var rpcServer *rpc.Client
-		var err error = errors.New("")
-		for ; err != nil ; {
-			if i == s.id {
-				//make a local rpc
-				addr := fmt.Sprintf("127.0.0.1:%d", s.port)
-				rpcServer, err = rpc.Dial("tcp", addr)
-			} else {
-				rpcServer, err = rpc.Dial("tcp", s.servers[i])
-			}
-			if err != nil {
-				log.Fatal("Cannot establish connection")
-			}
-			rpcServers[i] = rpcServer
-		}
-	}
-
-	var wg sync.WaitGroup
-	for i, rpcServer := range rpcServers {
-		wg.Add(1)
-		go func (i int, rpcServer *rpc.Client) {
-			defer wg.Done()
-			pk := make([]byte, SecretSize)
-			err := rpcServer.Call("Server.GetPK", 0, &pk)
-			if err != nil {
-				log.Fatal("Couldn't get server's pk: ", err)
-			}
-			s.pks[i] = UnmarshalPoint(pk)
-		} (i, rpcServer)
-	}
-	wg.Wait()
-	if s.id != len(s.servers)-1 {
-		s.nextPk = s.pks[s.id]
-		for i := s.id+1; i < len(s.servers); i++ {
-			s.nextPk = s.g.Point().Add(s.nextPk, s.pks[i])
-		}
-	} else {
-		s.nextPk = s.pk
-	}
-	s.rpcServers = rpcServers
 }
 
 func (s *Server) handleRequests(round int) {
@@ -459,7 +416,6 @@ func (s *Server) Register(client *ClientRegistration, clientId *int) error {
 	s.regLock[0].Lock()
 	*clientId = s.totalClients
 	s.totalClients++
-	s.regLock[0].Unlock()
 	for _, rpcServer := range s.rpcServers {
 		err := rpcServer.Call("Server.Register2", client, nil)
 		if err != nil {
@@ -469,6 +425,7 @@ func (s *Server) Register(client *ClientRegistration, clientId *int) error {
 	if s.totalClients == NumClients {
 		s.RegisterDone()
 	}
+	s.regLock[0].Unlock()
 	return nil
 }
 
@@ -487,6 +444,10 @@ func (s *Server) RegisterDone() {
 		if err != nil {
 			log.Fatal("Cannot update num clients")
 		}
+	}
+
+	for i := 0; i < s.totalClients; i++ {
+		s.regChan <- true
 	}
 }
 
@@ -533,7 +494,50 @@ func (s *Server) RegisterDone2(numClients int, _ *int) error {
 	return nil
 }
 
+func (s *Server) ConnectServers() {
+	rpcServers := make([]*rpc.Client, len(s.servers))
+	for i := range rpcServers {
+		var rpcServer *rpc.Client
+		var err error = errors.New("")
+		for ; err != nil ; {
+			if i == s.id {
+				//make a local rpc
+				addr := fmt.Sprintf("127.0.0.1:%d", s.port)
+				rpcServer, err = rpc.Dial("tcp", addr)
+			} else {
+				rpcServer, err = rpc.Dial("tcp", s.servers[i])
+			}
+			rpcServers[i] = rpcServer
+		}
+	}
+
+	var wg sync.WaitGroup
+	for i, rpcServer := range rpcServers {
+		wg.Add(1)
+		go func (i int, rpcServer *rpc.Client) {
+			defer wg.Done()
+			pk := make([]byte, SecretSize)
+			err := rpcServer.Call("Server.GetPK", 0, &pk)
+			if err != nil {
+				log.Fatal("Couldn't get server's pk: ", err)
+			}
+			s.pks[i] = UnmarshalPoint(pk)
+		} (i, rpcServer)
+	}
+	wg.Wait()
+	if s.id != len(s.servers)-1 {
+		s.nextPk = s.pks[s.id]
+		for i := s.id+1; i < len(s.servers); i++ {
+			s.nextPk = s.g.Point().Add(s.nextPk, s.pks[i])
+		}
+	} else {
+		s.nextPk = s.pk
+	}
+	s.rpcServers = rpcServers
+}
+
 func (s *Server) GetNumClients(_ int, num *int) error {
+	<-s.regChan
 	*num = s.totalClients
 	return nil
 }
