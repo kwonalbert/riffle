@@ -1,4 +1,5 @@
-package server
+//package server
+package main
 
 import (
 	"errors"
@@ -8,7 +9,6 @@ import (
 	"net"
 	"net/rpc"
 	"sync"
-	//"time"
 
 	. "afs/lib" //types and utils
 
@@ -16,6 +16,8 @@ import (
 	"github.com/dedis/crypto/proof"
 	"github.com/dedis/crypto/shuffle"
 )
+
+var TotalClients = 0
 
 //any variable/func with 2: similar object as s-c but only s-s
 type Server struct {
@@ -38,7 +40,6 @@ type Server struct {
 	ephSecret       abstract.Secret
 
 	//clients
-	clients         []string //clients connected here
 	clientMap       map[int]int //maps clients to dedicated server
 	numClients      int //#clients connect here
 	totalClients    int //total number of clients (sum of all servers)
@@ -110,7 +111,7 @@ func NewServer(addr string, port int, id int, servers []string) *Server {
 		id:             id,
 		servers:        servers,
 		regLock:        []*sync.Mutex{new(sync.Mutex), new(sync.Mutex)},
-		regChan:        make(chan bool, NumClients),
+		regChan:        make(chan bool, TotalClients),
 		regDone:        false,
 
 		g:              Suite,
@@ -120,7 +121,6 @@ func NewServer(addr string, port int, id int, servers []string) *Server {
 		pks:            make([]abstract.Point, len(servers)),
 		ephSecret:      ephSecret,
 
-		clients:        []string{},
 		clientMap:      make(map[int]int),
 		numClients:     0,
 		totalClients:   0,
@@ -138,19 +138,11 @@ func NewServer(addr string, port int, id int, servers []string) *Server {
 //Helpers
 ////////////////////////////////
 
-func (s *Server) MainLoop() {
-	rpcServer := rpc.NewServer()
-	rpcServer.Register(s)
-	l, err := net.Listen("tcp", s.addr)
-	if err != nil {
-		panic("Cannot starting listening to the port")
-	}
-	go rpcServer.Accept(l)
-
-	RunFunc(s.handleRequests)
-	RunFunc(s.gatherUploads)
-	RunFunc(s.shuffleUploads)
-	RunFunc(s.handleResponses)
+func (s *Server) runHandlers() {
+	runHandler(s.handleRequests)
+	runHandler(s.gatherUploads)
+	runHandler(s.shuffleUploads)
+	runHandler(s.handleResponses)
 }
 
 func (s *Server) handleRequests(round int) {
@@ -330,7 +322,9 @@ func (s *Server) shuffleUploads(round int) {
 				Block: decBlocks[i],
 				Round: round,
 			}
-			//fmt.Println(round, "final block: ", decBlocks[i], hashes[i])
+			// if round == 0 {
+			// 	fmt.Println(round, "final block: ", decBlocks[i], hashes[i])
+			// }
 		}
 		var wg sync.WaitGroup
 		for _, rpcServer := range s.rpcServers {
@@ -412,19 +406,24 @@ func (s *Server) shuffle(pi []int, Xs [][]abstract.Point, Ys [][]abstract.Point,
 ////////////////////////////////
 //register the client here, and notify the server it will be talking to
 //TODO: should check for duplicate clients, just in case..
-func (s *Server) Register(client *ClientRegistration, clientId *int) error {
+func (s *Server) Register(serverId int, clientId *int) error {
 	s.regLock[0].Lock()
 	*clientId = s.totalClients
+	client := &ClientRegistration{
+		ServerId: serverId,
+		Id: *clientId,
+	}
 	s.totalClients++
 	for _, rpcServer := range s.rpcServers {
 		err := rpcServer.Call("Server.Register2", client, nil)
 		if err != nil {
-			log.Fatal(fmt.Sprintf("Cannot connect to %d: ", client.ServerId), err)
+			log.Fatal(fmt.Sprintf("Cannot connect to %d: ", serverId), err)
 		}
 	}
-	if s.totalClients == NumClients {
-		s.RegisterDone()
+	if s.totalClients == TotalClients {
+		s.registerDone()
 	}
+	fmt.Println("Registered", *clientId)
 	s.regLock[0].Unlock()
 	return nil
 }
@@ -432,13 +431,12 @@ func (s *Server) Register(client *ClientRegistration, clientId *int) error {
 //called to increment total number of clients
 func (s *Server) Register2(client *ClientRegistration, _ *int) error {
 	s.regLock[1].Lock()
-	s.clients = append(s.clients, client.Addr)
 	s.clientMap[client.Id] = client.ServerId
 	s.regLock[1].Unlock()
 	return nil
 }
 
-func (s *Server) RegisterDone() {
+func (s *Server) registerDone() {
 	for _, rpcServer := range s.rpcServers {
 		err := rpcServer.Call("Server.RegisterDone2", s.totalClients, nil)
 		if err != nil {
@@ -449,6 +447,7 @@ func (s *Server) RegisterDone() {
 	for i := 0; i < s.totalClients; i++ {
 		s.regChan <- true
 	}
+	fmt.Println("Register done", )
 }
 
 func (s *Server) RegisterDone2(numClients int, _ *int) error {
@@ -494,7 +493,7 @@ func (s *Server) RegisterDone2(numClients int, _ *int) error {
 	return nil
 }
 
-func (s *Server) ConnectServers() {
+func (s *Server) connectServers() {
 	rpcServers := make([]*rpc.Client, len(s.servers))
 	for i := range rpcServers {
 		var rpcServer *rpc.Client
@@ -678,7 +677,6 @@ func (s *Server) PutClientBlock(cblock ClientBlock, _ *int) error {
 
 //used to push the uploaded blocks from the final shuffle server
 func (s *Server) PutUploadedBlocks(blocks *[]Block, _ *int) error {
-	//V1: hash here
 	round := (*blocks)[0].Round % MaxRounds
 	for i := range *blocks {
 		h := Suite.Hash()
@@ -705,15 +703,32 @@ func (s *Server) PutUploadedBlocks(blocks *[]Block, _ *int) error {
 }
 
 /////////////////////////////////
-//Misc (mostly for testing)
+//Misc
 ////////////////////////////////
+//used for the local test function to start the server
+func (s *Server) MainLoop(_ int, _ *int) error {
+	rpcServer := rpc.NewServer()
+	rpcServer.Register(s)
+	l, err := net.Listen("tcp", s.addr)
+	if err != nil {
+		panic("Cannot starting listening to the port")
+	}
+	go rpcServer.Accept(l)
 
-func (s *Server) Masks() [][]byte {
-	return s.masks
+	s.runHandlers()
+	s.connectServers()
+
+	return nil
 }
 
-func (s *Server) Secrets() [][]byte {
-	return s.secrets
+func runHandler(f func(int)) {
+	for r := 0; r < MaxRounds; r++ {
+		go func (r int) {
+			for {
+				f(r)
+			}
+		} (r)
+	}
 }
 
 /////////////////////////////////
@@ -721,12 +736,25 @@ func (s *Server) Secrets() [][]byte {
 /////////////////////////////////
 func main() {
 	var id *int = flag.Int("i", 0, "id [num]")
+	var servers *string = flag.String("s", "", "servers [file]")
+	var numClients *int = flag.Int("n", 0, "num clients [num]")
 	flag.Parse()
 
-	s := NewServer(ServerAddrs[*id], ServerPort + *id, *id, ServerAddrs)
-	s.MainLoop()
-	s.ConnectServers()
+	TotalClients = *numClients
 
-	for {}
+	ss := ParseServerList(*servers)
+
+	s := NewServer(ss[*id], ServerPort + *id, *id, ss)
+
+	rpcServer := rpc.NewServer()
+	rpcServer.Register(s)
+	l, err := net.Listen("tcp", s.addr)
+	if err != nil {
+		panic("Cannot starting listening to the port")
+	}
+	go s.connectServers()
+	fmt.Println("Starting server", *id)
+	s.runHandlers()
+	rpcServer.Accept(l)
 }
 

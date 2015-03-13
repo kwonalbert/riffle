@@ -32,8 +32,7 @@ func setup(numServers int, numClients int) ([]*Server, []*Client) {
 			defer wg.Done()
 			s := NewServer(ss[i], 8000+i, i, ss)
 			servers[i] = s
-			s.MainLoop()
-			s.ConnectServers()
+			_ = s.MainLoop(0, nil)
 		} (i)
 	}
 	wg.Wait()
@@ -43,7 +42,7 @@ func setup(numServers int, numClients int) ([]*Server, []*Client) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			c := NewClient(fmt.Sprintf("127.0.0.1:%d", 9000+i), ss, "127.0.0.1:8000")
+			c := NewClient(ss, ServerAddrs[i%len(ServerAddrs)])
 			clients[i] = c
 			c.Register(0)
 			c.RegisterDone()
@@ -54,20 +53,20 @@ func setup(numServers int, numClients int) ([]*Server, []*Client) {
 
 	fmt.Println("Done Registration")
 
-	for i, s := range servers {
-		masks := s.Masks()
-		secrets := s.Secrets()
-		cmasks := make([][]byte, NumClients)
-		csecrets := make([][]byte, NumClients)
-		for _, c := range clients {
-			cmasks[c.Id()] = c.Masks()[i]
-			csecrets[c.Id()] = c.Secrets()[i]
-		}
-		compareSecrets(masks, cmasks)
-		compareSecrets(secrets, csecrets)
-	}
+	// for i, s := range servers {
+	// 	masks := s.Masks()
+	// 	secrets := s.Secrets()
+	// 	cmasks := make([][]byte, NumClients)
+	// 	csecrets := make([][]byte, NumClients)
+	// 	for _, c := range clients {
+	// 		cmasks[c.Id()] = c.Masks()[i]
+	// 		csecrets[c.Id()] = c.Secrets()[i]
+	// 	}
+	// 	compareSecrets(masks, cmasks)
+	// 	compareSecrets(secrets, csecrets)
+	// }
 
-	fmt.Println("Secret shared")
+	// fmt.Println("Secret shared")
 
 	return servers, clients
 }

@@ -1,4 +1,5 @@
-package client
+//package client
+package main
 
 import (
 	"flag"
@@ -17,7 +18,6 @@ import (
 //assumes RPC model of communication
 
 type Client struct {
-	addr            string //client addr
 	id              int //client id
 	servers         []string //all servers
 	rpcServers      []*rpc.Client
@@ -52,29 +52,36 @@ type Client struct {
 	secrets         [][]byte //secret for data
 }
 
-func NewClient(addr string, servers []string, myServer string) *Client {
+func NewClient(servers []string, myServer string) *Client {
 	myServerIdx := 0
 	rpcServers := make([]*rpc.Client, len(servers))
 	for i := range rpcServers {
+		fmt.Println("client connecting to", servers[i])
 		if servers[i] == myServer {
 			myServerIdx = i
 		}
 		rpcServer, err := rpc.Dial("tcp", servers[i])
 		if err != nil {
-			log.Fatal("Cannot establish connection")
+			log.Fatal("Cannot establish connection:", err)
 		}
 		rpcServers[i] = rpcServer
 	}
 
 	pks := make([]abstract.Point, len(servers))
+	var wg sync.WaitGroup
 	for i, rpcServer := range rpcServers {
-		pk := make([]byte, SecretSize)
-		err := rpcServer.Call("Server.GetPK", 0, &pk)
-		if err != nil {
-			log.Fatal("Couldn't get server's pk: ", err)
-		}
-		pks[i] = UnmarshalPoint(pk)
+		wg.Add(1)
+		go func(i int, rpcServer *rpc.Client) {
+			defer wg.Done()
+			pk := make([]byte, SecretSize)
+			err := rpcServer.Call("Server.GetPK", 0, &pk)
+			if err != nil {
+				log.Fatal("Couldn't get server's pk:", err)
+			}
+			pks[i] = UnmarshalPoint(pk)
+		} (i, rpcServer)
 	}
+	wg.Wait()
 
 	masks := make([][]byte, len(servers))
 	secrets := make([][]byte, len(servers))
@@ -86,7 +93,6 @@ func NewClient(addr string, servers []string, myServer string) *Client {
 
 	//id comes from servers
 	c := Client {
-		addr:           addr,
 		id:             -1,
 		servers:        servers,
 		rpcServers:     rpcServers,
@@ -126,13 +132,8 @@ func NewClient(addr string, servers []string, myServer string) *Client {
 ////////////////////////////////
 
 func (c *Client) Register(idx int) {
-	cr := ClientRegistration {
-		Addr: c.addr,
-		ServerId: c.myServer,
-		Id: c.id,
-	}
 	var id int
-	err := c.rpcServers[idx].Call("Server.Register", cr, &id)
+	err := c.rpcServers[idx].Call("Server.Register", c.myServer, &id)
 	if err != nil {
 		log.Fatal("Couldn't register: ", err)
 	}
@@ -234,7 +235,7 @@ func (c *Client) DownloadReqHash() [][]byte {
 	}
 
 	// if c.id == 0 && c.reqRound == 0 {
-	// 	fmt.Println(c.id, c.reqHashRound, "all reqs", hashes)
+	// 	fmt.Println(c.reqHashRound, "all reqs", hashes)
 	// }
 
 	c.reqHashRound++
@@ -249,6 +250,7 @@ func (c *Client) Upload() {
 	var match []byte
 	var name string
 	var offset int64 = -1
+
 	//TODO: probably replace with hash map mapping hashes to file names
 	for n, f := range c.files {
 		fhashes := f.Hashes
@@ -264,6 +266,7 @@ func (c *Client) Upload() {
 			break
 		}
 	}
+
 	match = make([]byte, BlockSize)
 	if offset != -1 {
 		f := c.osFiles[name]
@@ -272,34 +275,11 @@ func (c *Client) Upload() {
 			log.Fatal("Failed reading file", name, ":", err)
 		}
 	}
-	c.UploadBlock(Block{Block: match, Round: c.upRound})
-	c.upRound++
-	c.upLock.Unlock()
-}
-
-func (c *Client) UploadPieces() {
-	c.upLock.Lock()
-	hashes := c.DownloadReqHash()
-	var match []byte = nil
-	for _, h := range hashes {
-		if len(c.testPieces[string(h)]) == 0 {
-			continue
-		}
-		match = c.testPieces[string(h)]
-		break
-	}
-
 	// h := Suite.Hash()
 	// h.Write(match)
 	// if c.upRound == 0 {
 	// 	fmt.Println(c.id, "uploading", match, h.Sum(nil))
 	// }
-
-	//TODO: handle unfound hash..
-	if match == nil {
-		match = make([]byte, BlockSize)
-		fmt.Println(c.id, "unfound", hashes)
-	}
 
 	c.UploadBlock(Block{Block: match, Round: c.upRound})
 	c.upRound++
@@ -420,6 +400,35 @@ func (c *Client) RegisterBlock(block []byte) {
 	//fmt.Println(c.id, "registering", hash)
 }
 
+func (c *Client) UploadPieces() {
+	c.upLock.Lock()
+	hashes := c.DownloadReqHash()
+	var match []byte = nil
+	for _, h := range hashes {
+		if len(c.testPieces[string(h)]) == 0 {
+			continue
+		}
+		match = c.testPieces[string(h)]
+		break
+	}
+
+	// h := Suite.Hash()
+	// h.Write(match)
+	// if c.upRound == 0 {
+	// 	fmt.Println(c.id, "uploading", match, h.Sum(nil))
+	// }
+
+	//TODO: handle unfound hash..
+	if match == nil {
+		match = make([]byte, BlockSize)
+		fmt.Println(c.id, "unfound", hashes)
+	}
+
+	c.UploadBlock(Block{Block: match, Round: c.upRound})
+	c.upRound++
+	c.upLock.Unlock()
+}
+
 func (c *Client) Id() int {
 	return c.id
 }
@@ -444,15 +453,20 @@ func (c *Client) ClearHashes() {
 //MAIN
 /////////////////////////////////
 func main() {
-	var id *int = flag.Int("i", 0, "id [num]")
 	var wf *string = flag.String("w", "", "wanted [file]") //torrent file
 	var f *string = flag.String("f", "", "file [file]") //file in possession
+	var s *int = flag.Int("i", 0, "server [id]") //my server id
+	var servers *string = flag.String("s", "", "servers [file]")
 	flag.Parse()
 
-	c := NewClient(fmt.Sprintf("127.0.0.1:%d", 9000+*id), ServerAddrs, ServerAddrs[0])
+	ss := ParseServerList(*servers)
+
+	c := NewClient(ss, ss[*s])
 	c.Register(0)
 	c.RegisterDone()
 	c.ShareSecret()
+
+	fmt.Println("Started client", c.id)
 
 	file, err := NewFile(*f)
 	if err != nil {
@@ -473,12 +487,13 @@ func main() {
 	}
 
 	var wg sync.WaitGroup
-	for {
+	//for {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for k, _ := range wanted {
 				c.RequestBlock(c.id, []byte(k))
+				fmt.Println(c.id, "Requested", c.reqRound)
 			}
 		} ()
 
@@ -487,6 +502,7 @@ func main() {
 			//defer wg.Done()
 			for {
 				c.Upload()
+				fmt.Println(c.id, "Uploaded", c.upRound)
 			}
 		} ()
 
@@ -500,10 +516,11 @@ func main() {
 				hash := h.Sum(nil)
 				offset := wanted[string(hash)]
 				nf.WriteAt(res, offset)
+				fmt.Println(c.id, "Downloaded", c.downRound)
 			}
 		}()
 
 		wg.Wait()
-	}
+	//}
 
 }

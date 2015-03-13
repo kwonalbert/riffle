@@ -1,12 +1,15 @@
 package lib
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
 	goCipher "crypto/cipher"
 	"crypto/aes"
 	"encoding/binary"
+	"io/ioutil"
 	"log"
+	"sync"
 	"time"
 	"os"
 
@@ -197,14 +200,10 @@ func UnmarshalPoint(ptByte []byte) abstract.Point {
 	return pt
 }
 
-func RunFunc(f func(int)) {
-	for r := 0; r < MaxRounds; r++ {
-		go func (r int) {
-			for {
-				f(r)
-			}
-		} (r)
-	}
+func Wait() {
+	var w sync.WaitGroup
+	w.Add(1)
+	w.Wait()
 }
 
 func TimeTrack(start time.Time, name string) {
@@ -224,7 +223,7 @@ func NewDesc(path string) (map[string]int64, error) {
 		return nil, err
 	}
 	if fi.Size() % HashSize != 0 {
-		return nil, errors.New("Misformatted file")
+		return nil, errors.New(" Misformatted file")
 	}
 	numHashes := fi.Size() / HashSize
 
@@ -272,4 +271,17 @@ func NewFile(path string) (*File, error) {
 	}
 
 	return x, nil
+}
+
+func ParseServerList(path string) []string {
+	servers, err := ioutil.ReadFile(path)
+	if err != nil {
+		log.Fatal("Failed reading servers file:", err)
+	}
+	scan := bufio.NewScanner(bytes.NewReader(servers))
+	ss := []string{}
+	for ; scan.Scan(); {
+		ss = append(ss, string(scan.Bytes()))
+	}
+	return ss
 }

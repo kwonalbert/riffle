@@ -56,7 +56,6 @@ type ClientMask struct {
 }
 
 type ClientRegistration struct {
-	Addr            string
 	ServerId        int //the dedicated server
 	Id              int
 }
