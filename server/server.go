@@ -29,6 +29,7 @@ type Server struct {
 	regLock         []*sync.Mutex //registration mutex
 	regChan         chan bool
 	regDone         bool
+	connectDone     bool
 
 	//crypto
 	g               abstract.Group
@@ -146,7 +147,7 @@ func (s *Server) runHandlers() {
 }
 
 func (s *Server) handleRequests(round int) {
-	if !s.regDone {
+	if !(s.regDone && s.connectDone) {
 		return
 	}
 
@@ -175,7 +176,7 @@ func (s *Server) handleRequests(round int) {
 }
 
 func (s *Server) handleResponses(round int) {
-	if !s.regDone {
+	if !(s.regDone && s.connectDone) {
 		return
 	}
 
@@ -220,7 +221,7 @@ func (s *Server) handleResponses(round int) {
 }
 
 func (s *Server) gatherUploads(round int) {
-	if !s.regDone {
+	if !(s.regDone && s.connectDone) {
 		return
 	}
 
@@ -233,7 +234,7 @@ func (s *Server) gatherUploads(round int) {
 }
 
 func (s *Server) shuffleUploads(round int) {
-	if !s.regDone {
+	if !(s.regDone && s.connectDone) {
 		return
 	}
 
@@ -447,7 +448,6 @@ func (s *Server) registerDone() {
 	for i := 0; i < s.totalClients; i++ {
 		s.regChan <- true
 	}
-	fmt.Println("Register done", )
 }
 
 func (s *Server) RegisterDone2(numClients int, _ *int) error {
@@ -490,6 +490,7 @@ func (s *Server) RegisterDone2(numClients int, _ *int) error {
 		s.rounds[r].ublockChan2 = make(chan UpBlock, numClients-1)
 	}
 	s.regDone = true
+	fmt.Println(s.id, "Register done")
 	return nil
 }
 
@@ -533,6 +534,7 @@ func (s *Server) connectServers() {
 		s.nextPk = s.pk
 	}
 	s.rpcServers = rpcServers
+	s.connectDone = true
 }
 
 func (s *Server) GetNumClients(_ int, num *int) error {
@@ -748,7 +750,7 @@ func main() {
 
 	rpcServer := rpc.NewServer()
 	rpcServer.Register(s)
-	l, err := net.Listen("tcp", s.addr)
+	l, err := net.Listen("tcp", fmt.Sprintf(":%d", s.port))
 	if err != nil {
 		panic("Cannot starting listening to the port")
 	}
