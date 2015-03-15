@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/rpc"
+	"runtime"
 	"sync"
 
 	. "afs/lib" //types and utils
@@ -737,6 +738,8 @@ func runHandler(f func(int)) {
 //MAIN
 /////////////////////////////////
 func main() {
+	runtime.GOMAXPROCS(runtime.NumCPU())
+
 	var id *int = flag.Int("i", 0, "id [num]")
 	var servers *string = flag.String("s", "", "servers [file]")
 	var numClients *int = flag.Int("n", 0, "num clients [num]")
