@@ -1,5 +1,5 @@
-//package client
-package main
+package client
+//package main
 
 import (
 	"flag"
@@ -13,6 +13,7 @@ import (
 
 	"github.com/dedis/crypto/abstract"
 	"github.com/dedis/crypto/cipher"
+	"github.com/dedis/crypto/edwards"
 )
 
 //assumes RPC model of communication
@@ -30,6 +31,7 @@ type Client struct {
 	testPieces      map[string][]byte //used only for testing
 
 	//crypto
+	suite           abstract.Suite
 	g               abstract.Group
 	rand            cipher.Stream
 	pks             []abstract.Point //server public keys
@@ -53,6 +55,8 @@ type Client struct {
 }
 
 func NewClient(servers []string, myServer string) *Client {
+	suite := edwards.NewAES128SHA256Ed25519(false)
+
 	myServerIdx := 0
 	rpcServers := make([]*rpc.Client, len(servers))
 	for i := range rpcServers {
@@ -78,7 +82,7 @@ func NewClient(servers []string, myServer string) *Client {
 			if err != nil {
 				log.Fatal("Couldn't get server's pk:", err)
 			}
-			pks[i] = UnmarshalPoint(pk)
+			pks[i] = UnmarshalPoint(suite, pk)
 		} (i, rpcServer)
 	}
 	wg.Wait()
@@ -89,7 +93,6 @@ func NewClient(servers []string, myServer string) *Client {
 		masks[i] = make([]byte, SecretSize)
 		secrets[i] = make([]byte, SecretSize)
 	}
-
 
 	//id comes from servers
 	c := Client {
@@ -104,8 +107,9 @@ func NewClient(servers []string, myServer string) *Client {
 
 		testPieces:     make(map[string][]byte),
 
-		g:              Suite,
-		rand:           Suite.Cipher(abstract.RandomKey),
+		suite:          suite,
+		g:              suite,
+		rand:           suite.Cipher(abstract.RandomKey),
 		pks:            pks,
 
 		reqRound:       0,
@@ -160,21 +164,20 @@ func (c *Client) ShareSecret() {
 
 	//generate share secrets via Diffie-Hellman w/ all servers
 	//one used for masks, one used for one-time pad
+	cs1 := ClientDH {
+		Public: MarshalPoint(public1),
+		Id: c.id,
+	}
+	cs2 := ClientDH {
+		Public: MarshalPoint(public2),
+		Id: c.id,
+	}
+
 	var wg sync.WaitGroup
 	for i, rpcServer := range c.rpcServers {
 		wg.Add(1)
-		go func(i int, rpcServer *rpc.Client) {
+		go func(i int, rpcServer *rpc.Client, cs1 ClientDH, cs2 ClientDH) {
 			defer wg.Done()
-
-			cs1 := ClientDH {
-				Public: MarshalPoint(public1),
-				Id: c.id,
-			}
-			cs2 := ClientDH {
-				Public: MarshalPoint(public2),
-				Id: c.id,
-			}
-
 			servPub1 := make([]byte, SecretSize)
 			servPub2 := make([]byte, SecretSize)
 			servPub3 := make([]byte, SecretSize)
@@ -184,15 +187,16 @@ func (c *Client) ShareSecret() {
 			_ = <-call1.Done
 			_ = <-call2.Done
 			_ = <-call3.Done
-			c.masks[i] = MarshalPoint(c.g.Point().Mul(UnmarshalPoint(servPub1), secret1))
+			c.masks[i] = MarshalPoint(c.g.Point().Mul(UnmarshalPoint(c.suite, servPub1), secret1))
 			// c.masks[i] = make([]byte, SecretSize)
 			// c.masks[i][c.id] = 1
-			//c.secrets[i] = MarshalPoint(c.g.Point().Mul(UnmarshalPoint(servPub2), secret2))
+			//c.secrets[i] = MarshalPoint(c.g.Point().Mul(UnmarshalPoint(c.suite, servPub2), secret2))
 			c.secrets[i] = make([]byte, SecretSize)
-			c.ephKeys[i] = UnmarshalPoint(servPub3)
-		} (i, rpcServer)
+			c.ephKeys[i] = UnmarshalPoint(c.suite, servPub3)
+		} (i, rpcServer, cs1, cs2)
 	}
 	wg.Wait()
+	fmt.Println(c.id, "masks", c.masks)
 }
 
 /////////////////////////////////
@@ -279,7 +283,7 @@ func (c *Client) Upload() {
 			log.Fatal("Failed reading file", name, ":", err)
 		}
 	}
-	// h := Suite.Hash()
+	// h := c.suite.Hash()
 	// h.Write(match)
 	// if c.upRound == 0 {
 	// 	fmt.Println(c.id, "uploading", match, h.Sum(nil))
@@ -300,7 +304,7 @@ func (c *Client) UploadBlock(block Block) {
 	bs := block.Block
 
 	for i := range c.servers {
-		h := Suite.Hash()
+		h := c.suite.Hash()
 		h.Write(bs)
 		hash := h.Sum(nil)
 		idx := len(c.servers)-1-i
@@ -392,14 +396,16 @@ func (c *Client) DownloadSlot(slot int) []byte {
 	Xor(secretsXor, response)
 
 	for i := range c.secrets {
-		rand := Suite.Cipher(c.secrets[i])
+		rand := c.suite.Cipher(c.secrets[i])
 		rand.Read(c.secrets[i])
 	}
 
 	for i := range c.masks {
-		rand := Suite.Cipher(c.masks[i])
+		rand := c.suite.Cipher(c.masks[i])
 		rand.Read(c.masks[i])
 	}
+
+	//fmt.Println(c.id, c.downRound, "update masks", c.masks)
 
 	return response
 }
@@ -408,7 +414,7 @@ func (c *Client) DownloadSlot(slot int) []byte {
 //Misc (mostly for testing)
 ////////////////////////////////
 func (c *Client) RegisterBlock(block []byte) {
-	h := Suite.Hash()
+	h := c.suite.Hash()
 	h.Write(block)
 	hash := h.Sum(nil)
 	c.testPieces[string(hash)] = block
@@ -427,7 +433,7 @@ func (c *Client) UploadPieces() {
 		break
 	}
 
-	// h := Suite.Hash()
+	// h := c.suite.Hash()
 	// h.Write(match)
 	// if c.upRound == 0 {
 	// 	fmt.Println(c.id, "uploading", match, h.Sum(nil))
@@ -483,7 +489,7 @@ func main() {
 
 	fmt.Println("Started client", c.id)
 
-	file, err := NewFile(*f)
+	file, err := NewFile(c.suite, *f)
 	if err != nil {
 		log.Fatal("Failed reading the file in hand", err)
 	}
@@ -526,7 +532,7 @@ func main() {
 			defer wg.Done()
 			for _, _ = range wanted {
 				res := c.Download()
-				h := Suite.Hash()
+				h := c.suite.Hash()
 				h.Write(res)
 				hash := h.Sum(nil)
 				offset := wanted[string(hash)]

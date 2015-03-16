@@ -4,7 +4,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"log"
-	"os"
+	//"os"
 	"runtime"
 	"sync"
 	"time"
@@ -14,37 +14,17 @@ import (
 	. "afs/server"
 	. "afs/client"
 	. "afs/lib"
+
+	"github.com/dedis/crypto/edwards"
 )
 
 var servers []*Server = nil
 var clients []*Client = nil
 
 var ServerAddrs []string = []string{"127.0.0.1:8000", "127.0.0.1:80001"}
-const NumClients = 3
+var Suite = edwards.NewAES128SHA256Ed25519(false)
+const NumClients = 5
 const NumServers = 2
-
-func TestAES(t *testing.T) {
-	testData := make([][]byte, NumClients)
-	for j := range testData {
-		data := make([]byte, BlockSize)
-		rand.Read(data)
-		//data[j] = 1
-		testData[j] = data
-	}
-
-	key := make([]byte, SecretSize)
-	rand.Read(key)
-	for i := range testData {
-		enc := CounterAES(key, testData[i])
-		dec := CounterAES(key, enc)
-		for j := range testData[i] {
-			if testData[i][j] != dec[j] {
-				panic("AES Failed!")
-			}
-		}
-	}
-
-}
 
 func TestRounds(t *testing.T) {
 	b := 10
@@ -126,5 +106,5 @@ func TestMain(m *testing.M) {
 	servers, clients = setup(NumServers, NumClients)
 	time.Sleep(1000*time.Millisecond)
 
-	os.Exit(m.Run())
+	//os.Exit(m.Run())
 }

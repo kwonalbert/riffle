@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"errors"
+	//"fmt"
 	goCipher "crypto/cipher"
 	"crypto/aes"
 	"encoding/binary"
@@ -193,9 +194,9 @@ func MarshalPoint(pt abstract.Point) []byte {
 	return ptByte
 }
 
-func UnmarshalPoint(ptByte []byte) abstract.Point {
+func UnmarshalPoint(suite abstract.Suite, ptByte []byte) abstract.Point {
 	buf := bytes.NewBuffer(ptByte)
-	pt := Suite.Point()
+	pt := suite.Point()
 	pt.UnmarshalFrom(buf)
 	return pt
 }
@@ -235,13 +236,14 @@ func NewDesc(path string) (map[string]int64, error) {
 		if err != nil {
 			log.Fatal("Failed reading file", err)
 		}
+		//fmt.Println("hash", hash, "to", i * BlockSize)
 		hashes[string(hash)] = int64(i * BlockSize)
 	}
 
 	return hashes, nil
 }
 
-func NewFile(path string) (*File, error) {
+func NewFile(suite abstract.Suite, path string) (*File, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		log.Fatal("Failed opening file", path, err)
@@ -265,7 +267,7 @@ func NewFile(path string) (*File, error) {
 		if err != nil {
 			log.Fatal("Failed reading file", err)
 		}
-		h := Suite.Hash()
+		h := suite.Hash()
 		h.Write(tmp)
 		x.Hashes[string(h.Sum(nil))] = int64((i * BlockSize))
 	}

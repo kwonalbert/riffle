@@ -12,6 +12,8 @@ import (
 
 func setup(numServers int, numClients int) ([]*Server, []*Client) {
 	fmt.Println(fmt.Sprintf("Setting up for %d servers and %d clients", numServers, numClients))
+	SetTotalClients(NumClients)
+
 	ss := make([]string, numServers)
 	cs := make([]string, numClients)
 	for i := range ss {
@@ -53,20 +55,20 @@ func setup(numServers int, numClients int) ([]*Server, []*Client) {
 
 	fmt.Println("Done Registration")
 
-	// for i, s := range servers {
-	// 	masks := s.Masks()
-	// 	secrets := s.Secrets()
-	// 	cmasks := make([][]byte, NumClients)
-	// 	csecrets := make([][]byte, NumClients)
-	// 	for _, c := range clients {
-	// 		cmasks[c.Id()] = c.Masks()[i]
-	// 		csecrets[c.Id()] = c.Secrets()[i]
-	// 	}
-	// 	compareSecrets(masks, cmasks)
-	// 	compareSecrets(secrets, csecrets)
-	// }
+	for i, s := range servers {
+		masks := s.Masks()
+		secrets := s.Secrets()
+		cmasks := make([][]byte, NumClients)
+		csecrets := make([][]byte, NumClients)
+		for _, c := range clients {
+			cmasks[c.Id()] = c.Masks()[i]
+			csecrets[c.Id()] = c.Secrets()[i]
+		}
+		compareSecrets(masks, cmasks)
+		compareSecrets(secrets, csecrets)
+	}
 
-	// fmt.Println("Secret shared")
+	fmt.Println("Secret shared")
 
 	return servers, clients
 }
@@ -77,7 +79,7 @@ func compareSecrets(secerets1 [][]byte, secerets2 [][]byte) {
 			if secerets1[i][j] != secerets2[i][j] {
 				fmt.Println(secerets1)
 				fmt.Println(secerets2)
-				panic("Sharing secrets didn't work!")
+				log.Fatal("Sharing secrets didn't work!")
 			}
 		}
 	}
