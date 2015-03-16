@@ -308,8 +308,11 @@ func (c *Client) UploadBlock(block Block) {
 		hash := h.Sum(nil)
 		idx := len(c.servers)-1-i
 		hc1ss[idx], hc2ss[idx] = Encrypt(c.g, hash, c.pks[:len(c.servers)-i])
-		key := MarshalPoint(c.g.Point().Mul(c.ephKeys[i], secret))
-		//fmt.Println(c.id, "client key", c.upRound, i, key)
+		key := MarshalPoint(c.g.Point().Mul(c.ephKeys[idx], secret))
+		// if c.upRound == 0 {
+		// 	fmt.Println(c.id, idx, "client key", c.upRound, key)
+		// 	fmt.Println(c.id, idx, "bs: ", bs)
+		// }
 		bs = CounterAES(key, bs)
 	}
 

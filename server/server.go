@@ -252,8 +252,10 @@ func (s *Server) shuffleUploads(round int) {
 	// 	}
 	// }
 
-	HXss := make([][][]abstract.Point, len(s.servers))
-	HYss := make([][][]abstract.Point, len(s.servers))
+	serversLeft := len(s.servers)-s.id
+
+	HXss := make([][][]abstract.Point, serversLeft)
+	HYss := make([][][]abstract.Point, serversLeft)
 
 	for i := range HXss {
 		HXss[i] = make([][]abstract.Point, hashChunks)
@@ -279,10 +281,10 @@ func (s *Server) shuffleUploads(round int) {
 	rand := s.suite.Cipher(abstract.RandomKey)
 	pi := GeneratePI(s.totalClients, rand)
 
-	HXbarss := make([][][]abstract.Point, len(s.servers))
-	HYbarss := make([][][]abstract.Point, len(s.servers))
-	Hdecss := make([][][]abstract.Point, len(s.servers))
-	prfs := make([][][]byte, len(s.servers))
+	HXbarss := make([][][]abstract.Point, serversLeft)
+	HYbarss := make([][][]abstract.Point, serversLeft)
+	Hdecss := make([][][]abstract.Point, serversLeft)
+	prfs := make([][][]byte, serversLeft)
 
 	ephKeys := make([]abstract.Point, s.totalClients)
 	decBlocks := make([][]byte, s.totalClients)
@@ -292,14 +294,16 @@ func (s *Server) shuffleUploads(round int) {
 	go func() {
 		defer wg.Done()
 		var shuffleWG sync.WaitGroup
-		for i := range s.servers {
-			if i >= s.id {
-				shuffleWG.Add(1)
-				go func(i int) {
-					defer shuffleWG.Done()
-					HXbarss[i], HYbarss[i], Hdecss[i], prfs[i] = s.shuffle(pi, HXss[i], HYss[i], hashChunks)
-				} (i)
-			}
+		for i := 0; i < serversLeft; i++ {
+			shuffleWG.Add(1)
+			go func(i int) {
+				defer shuffleWG.Done()
+				pk := s.pk
+				for j := 1; j <= i; j++ {
+					pk = s.g.Point().Add(pk, s.pks[s.id + j])
+				}
+				HXbarss[i], HYbarss[i], Hdecss[i], prfs[i] = s.shuffle(pi, HXss[i], HYss[i], hashChunks, pk)
+			} (i)
 		}
 		shuffleWG.Wait()
 	} ()
@@ -314,6 +318,8 @@ func (s *Server) shuffleUploads(round int) {
 				key := MarshalPoint(s.g.Point().Mul(ephKey, s.ephSecret))
 				//shuffle using pi
 				decBlocks[j] = CounterAES(key, allUploads[pi[j]].BC)
+				//fmt.Println(s.id, round, "server key", key)
+				//fmt.Println(s.id, round, "server bs", decBlocks[j])
 				ephKeys[j] = ephKey
 			} (j)
 		}
@@ -321,25 +327,34 @@ func (s *Server) shuffleUploads(round int) {
 	} ()
 	wg.Wait()
 
+	hashes := make([][]byte, s.totalClients)
 
+	for i := range hashes {
+		hash := []byte{}
+		for j := range Hdecss[0] {
+			msg, err := Hdecss[0][j][i].Data()
+			if err != nil {
+				log.Fatal(s.id, " could not decrypt ", round, ": ", err)
+			}
+			hash = append(hash, msg...)
+		}
+		hashes[i] = hash
+	}
+	for i := range hashes {
+		h := s.suite.Hash()
+		h.Write(decBlocks[i])
+		hash := h.Sum(nil)
+		if !SliceEquals(hash, hashes[i]) {
+			log.Fatal("Hash mismatch!")
+		}
+	}
 
 	if s.id == len(s.servers) - 1 {
-		//last server to shuffle, broadcast
-		hashes := make([][]byte, s.totalClients)
 		blocks := make([]Block, s.totalClients)
-		//TODO: check hashes
+		//last server to shuffle, broadcast
 		for i := range blocks {
-			hash := []byte{}
-			for j := range Hdecss[s.id] {
-				msg, err := Hdecss[s.id][j][i].Data()
-				if err != nil {
-					log.Fatal("Could not decrypt: ", err)
-				}
-				hash = append(hash, msg...)
-			}
-			hashes[i] = hash
 			blocks[i] = Block {
-				Hash:  hash,
+				Hash:  hashes[i],
 				Block: decBlocks[i],
 				Round: round,
 			}
@@ -347,6 +362,7 @@ func (s *Server) shuffleUploads(round int) {
 			//  	fmt.Println(round, "final block: ", decBlocks[i], hashes[i])
 			// }
 		}
+
 		var wg sync.WaitGroup
 		for _, rpcServer := range s.rpcServers {
 			wg.Add(1)
@@ -360,24 +376,28 @@ func (s *Server) shuffleUploads(round int) {
 		}
 		wg.Wait()
 	} else {
-		for i := range allUploads {
-			for j := range allUploads[i].HC1 {
-				for k := range allUploads[i].HC1[j] {
-					if j <= s.id {
-						allUploads[i].HC1[j][k] = []byte{}
-						allUploads[i].HC2[j][k] = []byte{}
-					} else {
-						allUploads[i].HC1[j][k] = MarshalPoint(HXbarss[j][k][i])
-						allUploads[i].HC2[j][k] = MarshalPoint(Hdecss[j][k][i])
-					}
+		nextUploads := make([]UpBlock, s.totalClients)
+		for i := range nextUploads {
+			dh1, dh2 := EncryptPoint(s.g, ephKeys[i], s.pks[s.id+1])
+			upblock := UpBlock {
+				HC1: make([][][]byte, serversLeft-1),
+				HC2: make([][][]byte, serversLeft-1),
+				DH1: MarshalPoint(dh1),
+				DH2: MarshalPoint(dh2),
+				BC:  decBlocks[i],
+				Round: allUploads[i].Round,
+			}
+			for j := 0; j < serversLeft-1; j++ {
+				upblock.HC1[j] = make([][]byte, hashChunks)
+				upblock.HC2[j] = make([][]byte, hashChunks)
+				for k := 0; k < hashChunks; k++ {
+					upblock.HC1[j][k] = MarshalPoint(HXbarss[j+1][k][i])
+					upblock.HC2[j][k] = MarshalPoint(Hdecss[j+1][k][i])
 				}
 			}
-			dh1, dh2 := EncryptPoint(s.g, ephKeys[i], s.pks[s.id+1])
-			allUploads[i].DH1 = MarshalPoint(dh1)
-			allUploads[i].DH2 = MarshalPoint(dh2)
-			allUploads[i].BC = decBlocks[i]
+			nextUploads[i] = upblock
 		}
-		err := s.rpcServers[s.id+1].Call("Server.ShuffleBlocks", allUploads, nil)
+		err := s.rpcServers[s.id+1].Call("Server.ShuffleBlocks", &nextUploads, nil)
 		if err != nil {
 			log.Fatal("Failed requesting shuffle: ", err)
 		}
@@ -386,14 +406,14 @@ func (s *Server) shuffleUploads(round int) {
 	//fmt.Println(s.id, "shuffle done: ", round)
 }
 
-func (s *Server) shuffle(pi []int, Xs [][]abstract.Point, Ys [][]abstract.Point, numChunks int) ([][]abstract.Point,
+func (s *Server) shuffle(pi []int, Xs [][]abstract.Point, Ys [][]abstract.Point, numChunks int, pk abstract.Point) ([][]abstract.Point,
 	[][]abstract.Point, [][]abstract.Point, [][]byte) {
 	Xbars := make([][]abstract.Point, numChunks)
 	Ybars := make([][]abstract.Point, numChunks)
 	decs := make([][]abstract.Point, numChunks)
 	provers := make([] proof.Prover, numChunks)
 	prfs := make([][]byte, numChunks)
-	pk := s.nextPk
+
 
 	//do the shuffle, and blind using next server's keys
 	//everyone shares the same group
@@ -553,14 +573,6 @@ func (s *Server) connectServers() {
 		} (i, rpcServer)
 	}
 	wg.Wait()
-	if s.id != len(s.servers)-1 {
-		s.nextPk = s.pks[s.id]
-		for i := s.id+1; i < len(s.servers); i++ {
-			s.nextPk = s.g.Point().Add(s.nextPk, s.pks[i])
-		}
-	} else {
-		s.nextPk = s.pk
-	}
 	s.rpcServers = rpcServers
 	//s.connectDone <- true
 }
