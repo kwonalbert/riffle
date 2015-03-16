@@ -11,28 +11,15 @@ type Block struct {
 	Round           int
 }
 
-// type UpBlock struct {
-// 	HC1             [][]byte //hashes
-// 	HC2             [][]byte
-// 	BC1             [][]byte //aes encrypted block
-// 	BC2             [][]byte
-// 	Round           int
-// }
-
 //encrypted version of the block
 type UpBlock struct {
-	HC1             [][]byte //hashes
-	HC2             [][]byte
+	HC1             [][][]byte //hashes
+	HC2             [][][]byte
 	DH1             []byte //diffie-hellman ephemeral
 	DH2             []byte
 	BC              []byte //aes encrypted block
 	Round           int
 }
-
-// type Request struct {
-// 	Hash            []byte
-// 	Round           int
-// }
 
 //Dissent model request
 type Request struct {

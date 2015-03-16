@@ -18,7 +18,7 @@ import (
 	"github.com/dedis/crypto/shuffle"
 )
 
-var TotalClients = 0
+var TotalClients = 3
 
 //any variable/func with 2: similar object as s-c but only s-s
 type Server struct {
@@ -189,6 +189,7 @@ func (s *Server) handleResponses(round int) {
 		//if it doesnt belong to me, xor things and send it over
 		go func(i int, sid int) {
 			res := ComputeResponse(allBlocks, s.masks[i], s.secrets[i])
+			//fmt.Println(s.id, "mask for", i, s.masks[i])
 			rand := Suite.Cipher(s.secrets[i])
 			rand.Read(s.secrets[i])
 			rand = Suite.Cipher(s.masks[i])
@@ -244,22 +245,26 @@ func (s *Server) shuffleUploads(round int) {
 
 	//shuffle and reblind
 
-	hashChunks := len(allUploads[0].HC1)
-	for _, upload := range allUploads {
-		if hashChunks != len(upload.HC1)  {
-			panic("Different chunk lengths")
-		}
-	}
+	hashChunks := len(allUploads[0].HC1[0])
+	// for _, upload := range allUploads {
+	// 	if hashChunks != len(upload.HC1[0])  {
+	// 		panic("Different chunk lengths")
+	// 	}
+	// }
 
-	HXs := make([][]abstract.Point, hashChunks)
-	HYs := make([][]abstract.Point, hashChunks)
+	HXss := make([][][]abstract.Point, len(s.servers))
+	HYss := make([][][]abstract.Point, len(s.servers))
 
-	for i := range HXs {
-		HXs[i] = make([]abstract.Point, s.totalClients)
-		HYs[i] = make([]abstract.Point, s.totalClients)
-		for j := 0; j < s.totalClients; j++ {
-			HXs[i][j] = UnmarshalPoint(allUploads[j].HC1[i])
-			HYs[i][j] = UnmarshalPoint(allUploads[j].HC2[i])
+	for i := range HXss {
+		HXss[i] = make([][]abstract.Point, hashChunks)
+		HYss[i] = make([][]abstract.Point, hashChunks)
+		for j := range HXss[i] {
+			HXss[i][j] = make([]abstract.Point, s.totalClients)
+			HYss[i][j] = make([]abstract.Point, s.totalClients)
+			for k := range HXss[i][j] {
+				HXss[i][j][k] = UnmarshalPoint(allUploads[k].HC1[i][j])
+				HYss[i][j][k] = UnmarshalPoint(allUploads[k].HC2[i][j])
+			}
 		}
 	}
 
@@ -273,19 +278,32 @@ func (s *Server) shuffleUploads(round int) {
 	//TODO: need to send ybar and proofs out out eventually
 	pi := GeneratePI(s.totalClients, s.rand)
 
-	var HXbars [][]abstract.Point
-	var Hdecs [][]abstract.Point
+	HXbarss := make([][][]abstract.Point, len(s.servers))
+	HYbarss := make([][][]abstract.Point, len(s.servers))
+	Hdecss := make([][][]abstract.Point, len(s.servers))
+	prfs := make([][][]byte, len(s.servers))
+
 	ephKeys := make([]abstract.Point, s.totalClients)
 	decBlocks := make([][]byte, s.totalClients)
 
-	var shuffleWG sync.WaitGroup
-	shuffleWG.Add(2)
+	var wg sync.WaitGroup
+	wg.Add(2)
 	go func() {
-		defer shuffleWG.Done()
-		HXbars, _, Hdecs, _ = s.shuffle(pi, HXs, HYs, hashChunks)
+		defer wg.Done()
+		var shuffleWG sync.WaitGroup
+		for i := range s.servers {
+			if i >= s.id {
+				shuffleWG.Add(1)
+				go func(i int) {
+					defer shuffleWG.Done()
+					HXbarss[i], HYbarss[i], Hdecss[i], prfs[i] = s.shuffle(pi, HXss[i], HYss[i], hashChunks)
+				} (i)
+			}
+		}
+		shuffleWG.Wait()
 	} ()
 	go func() {
-		defer shuffleWG.Done()
+		defer wg.Done()
 		var aesWG sync.WaitGroup
 		for j := 0; j < s.totalClients; j++ {
 			aesWG.Add(1)
@@ -293,8 +311,6 @@ func (s *Server) shuffleUploads(round int) {
 				defer aesWG.Done()
 				ephKey := Decrypt(s.g, DX[pi[j]], DY[pi[j]], s.sk)
 				key := MarshalPoint(s.g.Point().Mul(ephKey, s.ephSecret))
-				//fmt.Println("server eph", s.id, MarshalPoint(ephKey))
-				//fmt.Println("server key", s.id, key)
 				//shuffle using pi
 				decBlocks[j] = CounterAES(key, allUploads[pi[j]].BC)
 				ephKeys[j] = ephKey
@@ -302,7 +318,9 @@ func (s *Server) shuffleUploads(round int) {
 		}
 		aesWG.Wait()
 	} ()
-	shuffleWG.Wait()
+	wg.Wait()
+
+
 
 	if s.id == len(s.servers) - 1 {
 		//last server to shuffle, broadcast
@@ -311,8 +329,8 @@ func (s *Server) shuffleUploads(round int) {
 		//TODO: check hashes
 		for i := range blocks {
 			hash := []byte{}
-			for j := range Hdecs {
-				msg, err := Hdecs[j][i].Data()
+			for j := range Hdecss[s.id] {
+				msg, err := Hdecss[s.id][j][i].Data()
 				if err != nil {
 					log.Fatal("Could not decrypt: ", err)
 				}
@@ -325,7 +343,7 @@ func (s *Server) shuffleUploads(round int) {
 				Round: round,
 			}
 			// if round == 0 {
-			// 	fmt.Println(round, "final block: ", decBlocks[i], hashes[i])
+			//  	fmt.Println(round, "final block: ", decBlocks[i], hashes[i])
 			// }
 		}
 		var wg sync.WaitGroup
@@ -343,8 +361,15 @@ func (s *Server) shuffleUploads(round int) {
 	} else {
 		for i := range allUploads {
 			for j := range allUploads[i].HC1 {
-				allUploads[i].HC1[j] = MarshalPoint(HXbars[j][i])
-				allUploads[i].HC2[j] = MarshalPoint(Hdecs[j][i])
+				for k := range allUploads[i].HC1[j] {
+					if j <= s.id {
+						allUploads[i].HC1[j][k] = []byte{}
+						allUploads[i].HC2[j][k] = []byte{}
+					} else {
+						allUploads[i].HC1[j][k] = MarshalPoint(HXbarss[j][k][i])
+						allUploads[i].HC2[j][k] = MarshalPoint(Hdecss[j][k][i])
+					}
+				}
 			}
 			dh1, dh2 := EncryptPoint(s.g, ephKeys[i], s.pks[s.id+1])
 			allUploads[i].DH1 = MarshalPoint(dh1)
@@ -449,6 +474,7 @@ func (s *Server) registerDone() {
 	for i := 0; i < s.totalClients; i++ {
 		s.regChan <- true
 	}
+	fmt.Println("Registration done")
 }
 
 func (s *Server) RegisterDone2(numClients int, _ *int) error {
@@ -560,13 +586,16 @@ func (s *Server) shareSecret(clientPublic abstract.Point) (abstract.Point, abstr
 func (s *Server) ShareMask(clientDH *ClientDH, serverPub *[]byte) error {
 	pub, shared := s.shareSecret(UnmarshalPoint(clientDH.Public))
 	s.masks[clientDH.Id] = MarshalPoint(shared)
+	// s.masks[clientDH.Id] = make([]byte, len(MarshalPoint(shared)))
+	// s.masks[clientDH.Id][clientDH.Id] = 1
 	*serverPub = MarshalPoint(pub)
 	return nil
 }
 
 func (s *Server) ShareSecret(clientDH *ClientDH, serverPub *[]byte) error {
 	pub, shared := s.shareSecret(UnmarshalPoint(clientDH.Public))
-	s.secrets[clientDH.Id] = MarshalPoint(shared)
+	//s.secrets[clientDH.Id] = MarshalPoint(shared)
+	s.secrets[clientDH.Id] = make([]byte, len(MarshalPoint(shared)))
 	*serverPub = MarshalPoint(pub)
 	return nil
 }
@@ -656,6 +685,7 @@ func (s *Server) GetResponse(cmask ClientMask, response *[]byte) error {
 			go func(i int, cmask ClientMask) {
 				defer wg.Done()
 				curBlock := <-s.rounds[round].xorsChan[i][cmask.Id]
+				//fmt.Println(s.id, "mask for", cmask.Id, cmask.Mask)
 				otherBlocks[i] = curBlock.Block
 			} (i, cmask)
 		}

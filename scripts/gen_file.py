@@ -7,6 +7,8 @@ num_chunks = int(sys.argv[2])
 block_size = eval(sys.argv[3])
 dst_dir = sys.argv[4]
 
+known_hashes = []
+
 print 'block size: %d' % block_size
 
 file_name = "file%d"

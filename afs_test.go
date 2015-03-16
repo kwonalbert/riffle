@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"time"
+	"runtime"
 	"sync"
+	"time"
 
 	"testing"
 
@@ -17,6 +18,10 @@ import (
 
 var servers []*Server = nil
 var clients []*Client = nil
+
+var ServerAddrs []string = []string{"127.0.0.1:8000", "127.0.0.1:80001"}
+const NumClients = 3
+const NumServers = 2
 
 func TestAES(t *testing.T) {
 	testData := make([][]byte, NumClients)
@@ -51,6 +56,9 @@ func TestRounds(t *testing.T) {
 			data := make([]byte, BlockSize)
 			rand.Read(data)
 			//data[j] = 1
+			// if i == 0 {
+			// 	fmt.Println("block:", data)
+			// }
 			testData[i][j] = data
 		}
 
@@ -99,7 +107,9 @@ func TestRounds(t *testing.T) {
 				for i := 0; i < b; i++ {
 					res := clients[c].Download()
 					if Membership(res, testData[i]) == -1 {
+						fmt.Println("Round", i)
 						fmt.Println("res: ", res)
+						fmt.Println("test: ", testData[i])
 						log.Fatal("Didn't get all data back")
 					}
 				}
@@ -112,6 +122,7 @@ func TestRounds(t *testing.T) {
 }
 
 func TestMain(m *testing.M) {
+	runtime.GOMAXPROCS(runtime.NumCPU())
 	servers, clients = setup(NumServers, NumClients)
 	time.Sleep(1000*time.Millisecond)
 

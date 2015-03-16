@@ -150,6 +150,7 @@ func (c *Client) RegisterDone() {
 }
 
 //share one time secret with the server
+//TODO: need to share longer secret for more than 256 clients
 func (c *Client) ShareSecret() {
 	gen := c.g.Point().Base()
 	secret1 := c.g.Secret().Pick(c.rand)
@@ -184,7 +185,10 @@ func (c *Client) ShareSecret() {
 			_ = <-call2.Done
 			_ = <-call3.Done
 			c.masks[i] = MarshalPoint(c.g.Point().Mul(UnmarshalPoint(servPub1), secret1))
-			c.secrets[i] = MarshalPoint(c.g.Point().Mul(UnmarshalPoint(servPub2), secret2))
+			// c.masks[i] = make([]byte, SecretSize)
+			// c.masks[i][c.id] = 1
+			//c.secrets[i] = MarshalPoint(c.g.Point().Mul(UnmarshalPoint(servPub2), secret2))
+			c.secrets[i] = make([]byte, SecretSize)
 			c.ephKeys[i] = UnmarshalPoint(servPub3)
 		} (i, rpcServer)
 	}
@@ -247,7 +251,7 @@ func (c *Client) Upload() {
 	//okay to lock; bandwidth is still near maximized
 	c.upLock.Lock()
 	hashes := c.DownloadReqHash()
-	var match []byte
+	match := []byte{}
 	var name string
 	var offset int64 = -1
 
@@ -267,8 +271,8 @@ func (c *Client) Upload() {
 		}
 	}
 
-	match = make([]byte, BlockSize)
 	if offset != -1 {
+		match = make([]byte, BlockSize)
 		f := c.osFiles[name]
 		_, err := f.ReadAt(match, offset)
 		if err != nil {
@@ -287,16 +291,20 @@ func (c *Client) Upload() {
 }
 
 func (c *Client) UploadBlock(block Block) {
-	h := Suite.Hash()
-	h.Write(block.Block)
-	hash := h.Sum(nil)
-	hc1s, hc2s := Encrypt(c.g, hash, c.pks)
+	hc1ss := make([][]abstract.Point, len(c.servers))
+	hc2ss := make([][]abstract.Point, len(c.servers))
 
 	gen := c.g.Point().Base()
 	secret := c.g.Secret().Pick(c.rand)
 	public := c.g.Point().Mul(gen, secret)
 	bs := block.Block
+
 	for i := range c.servers {
+		h := Suite.Hash()
+		h.Write(bs)
+		hash := h.Sum(nil)
+		idx := len(c.servers)-1-i
+		hc1ss[idx], hc2ss[idx] = Encrypt(c.g, hash, c.pks[:len(c.servers)-i])
 		key := MarshalPoint(c.g.Point().Mul(c.ephKeys[i], secret))
 		//fmt.Println(c.id, "client key", c.upRound, i, key)
 		bs = CounterAES(key, bs)
@@ -305,17 +313,21 @@ func (c *Client) UploadBlock(block Block) {
 	dh1, dh2 := EncryptPoint(c.g, public, c.pks[0])
 	//fmt.Println(c.id, "client pt", c.upRound, MarshalPoint(public))
 	upblock := UpBlock {
-		HC1: make([][]byte, len(hc1s)),
-		HC2: make([][]byte, len(hc2s)),
+		HC1: make([][][]byte, len(hc1ss)),
+		HC2: make([][][]byte, len(hc2ss)),
 		DH1: MarshalPoint(dh1),
 		DH2: MarshalPoint(dh2),
 		BC:  bs,
 		Round: block.Round,
 	}
 
-	for i := range hc1s {
-		upblock.HC1[i] = MarshalPoint(hc1s[i])
-		upblock.HC2[i] = MarshalPoint(hc2s[i])
+	for i := range hc1ss {
+		upblock.HC1[i] = make([][]byte, len(hc1ss[i]))
+		upblock.HC2[i] = make([][]byte, len(hc2ss[i]))
+		for j := range upblock.HC1[i] {
+			upblock.HC1[i][j] = MarshalPoint(hc1ss[i][j])
+			upblock.HC2[i][j] = MarshalPoint(hc2ss[i][j])
+		}
 	}
 
 	err := c.rpcServers[c.myServer].Call("Server.UploadBlock", &upblock, nil)
@@ -331,6 +343,9 @@ func (c *Client) UploadBlock(block Block) {
 func (c *Client) Download() []byte {
 	c.downLock.Lock()
 	hash := <-c.dhashes
+	// if c.downRound == 0 {
+	// 	fmt.Println(c.id, "hash", hash)
+	// }
 	block := c.DownloadBlock(hash)
 	c.downRound++
 	c.downLock.Unlock()
@@ -403,7 +418,7 @@ func (c *Client) RegisterBlock(block []byte) {
 func (c *Client) UploadPieces() {
 	c.upLock.Lock()
 	hashes := c.DownloadReqHash()
-	var match []byte = nil
+	match := []byte{}
 	for _, h := range hashes {
 		if len(c.testPieces[string(h)]) == 0 {
 			continue
@@ -493,7 +508,7 @@ func main() {
 			defer wg.Done()
 			for k, _ := range wanted {
 				c.RequestBlock(c.id, []byte(k))
-				fmt.Println(c.id, "Requested", c.reqRound)
+				//fmt.Println(c.id, "Requested", c.reqRound)
 			}
 		} ()
 
@@ -502,7 +517,7 @@ func main() {
 			//defer wg.Done()
 			for {
 				c.Upload()
-				fmt.Println(c.id, "Uploaded", c.upRound)
+				//fmt.Println(c.id, "Uploaded", c.upRound)
 			}
 		} ()
 
@@ -515,8 +530,9 @@ func main() {
 				h.Write(res)
 				hash := h.Sum(nil)
 				offset := wanted[string(hash)]
+				fmt.Println(c.id, c.downRound, "offset", offset)
 				nf.WriteAt(res, offset)
-				fmt.Println(c.id, "Downloaded", c.downRound)
+				//fmt.Println(c.id, "Downloaded", c.downRound)
 			}
 		}()
 
