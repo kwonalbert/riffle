@@ -1,5 +1,5 @@
-package client
-//package main
+//package client
+package main
 
 import (
 	"flag"
@@ -12,7 +12,6 @@ import (
 	. "afs/lib" //types and utils
 
 	"github.com/dedis/crypto/abstract"
-	"github.com/dedis/crypto/cipher"
 	"github.com/dedis/crypto/edwards"
 )
 
@@ -33,7 +32,6 @@ type Client struct {
 	//crypto
 	suite           abstract.Suite
 	g               abstract.Group
-	rand            cipher.Stream
 	pks             []abstract.Point //server public keys
 
 	reqRound        int
@@ -109,7 +107,6 @@ func NewClient(servers []string, myServer string) *Client {
 
 		suite:          suite,
 		g:              suite,
-		rand:           suite.Cipher(abstract.RandomKey),
 		pks:            pks,
 
 		reqRound:       0,
@@ -157,8 +154,9 @@ func (c *Client) RegisterDone() {
 //TODO: need to share longer secret for more than 256 clients
 func (c *Client) ShareSecret() {
 	gen := c.g.Point().Base()
-	secret1 := c.g.Secret().Pick(c.rand)
-	secret2 := c.g.Secret().Pick(c.rand)
+	rand := c.suite.Cipher(abstract.RandomKey)
+	secret1 := c.g.Secret().Pick(rand)
+	secret2 := c.g.Secret().Pick(rand)
 	public1 := c.g.Point().Mul(gen, secret1)
 	public2 := c.g.Point().Mul(gen, secret2)
 
@@ -184,9 +182,9 @@ func (c *Client) ShareSecret() {
 			call1 := rpcServer.Go("Server.ShareMask", &cs1, &servPub1, nil)
 			call2 := rpcServer.Go("Server.ShareSecret", &cs2, &servPub2, nil)
 			call3 := rpcServer.Go("Server.GetEphKey", 0, &servPub3, nil)
-			_ = <-call1.Done
-			_ = <-call2.Done
-			_ = <-call3.Done
+			<-call1.Done
+			<-call2.Done
+			<-call3.Done
 			c.masks[i] = MarshalPoint(c.g.Point().Mul(UnmarshalPoint(c.suite, servPub1), secret1))
 			// c.masks[i] = make([]byte, SecretSize)
 			// c.masks[i][c.id] = 1
@@ -196,7 +194,7 @@ func (c *Client) ShareSecret() {
 		} (i, rpcServer, cs1, cs2)
 	}
 	wg.Wait()
-	fmt.Println(c.id, "masks", c.masks)
+	//fmt.Println(c.id, "masks", c.masks)
 }
 
 /////////////////////////////////
@@ -299,7 +297,8 @@ func (c *Client) UploadBlock(block Block) {
 	hc2ss := make([][]abstract.Point, len(c.servers))
 
 	gen := c.g.Point().Base()
-	secret := c.g.Secret().Pick(c.rand)
+	rand := c.suite.Cipher(abstract.RandomKey)
+	secret := c.g.Secret().Pick(rand)
 	public := c.g.Point().Mul(gen, secret)
 	bs := block.Block
 
@@ -388,9 +387,10 @@ func (c *Client) DownloadSlot(slot int) []byte {
 	response := make([]byte, BlockSize)
 	secretsXor := Xors(c.secrets)
 	cMask := ClientMask {Mask: mask, Id: c.id, Round: c.downRound}
-	err := c.rpcServers[c.myServer].Call("Server.GetResponse", cMask, &response)
-	if err != nil {
-		log.Fatal("Could not get response: ", err)
+	call := c.rpcServers[c.myServer].Go("Server.GetResponse", cMask, &response, nil)
+	<-call.Done
+	if call.Error != nil {
+		log.Fatal("Could not get response: ", call.Error)
 	}
 
 	Xor(secretsXor, response)
@@ -485,6 +485,7 @@ func main() {
 	c := NewClient(ss, ss[*s])
 	c.Register(0)
 	c.RegisterDone()
+	fmt.Println(c.id, "Sharing secret...")
 	c.ShareSecret()
 
 	fmt.Println("Started client", c.id)

@@ -4,7 +4,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"log"
-	//"os"
+	"os"
 	"runtime"
 	"sync"
 	"time"
@@ -106,5 +106,5 @@ func TestMain(m *testing.M) {
 	servers, clients = setup(NumServers, NumClients)
 	time.Sleep(1000*time.Millisecond)
 
-	//os.Exit(m.Run())
+	os.Exit(m.Run())
 }

@@ -1,5 +1,5 @@
-package server
-//package main
+//package server
+package main
 
 import (
 	"errors"
@@ -32,13 +32,13 @@ type Server struct {
 	regChan         chan bool
 	regDone         chan bool
 	connectDone     chan bool
+	running         chan bool
 	secretLock      *sync.Mutex
 	pkLock          *sync.Mutex //avoid data race in go
 
 	//crypto
 	suite           abstract.Suite
 	g               abstract.Group
-	rand            abstract.Cipher
 	sk              abstract.Secret //secret and public elgamal key
 	pk              abstract.Point
 	pks             []abstract.Point //all servers pks
@@ -120,13 +120,13 @@ func NewServer(addr string, port int, id int, servers []string) *Server {
 		regLock:        []*sync.Mutex{new(sync.Mutex), new(sync.Mutex)},
 		regChan:        make(chan bool, TotalClients),
 		regDone:        make(chan bool),
+		connectDone:    make(chan bool),
+		running:        make(chan bool),
 		secretLock:     new(sync.Mutex),
 		pkLock:         new(sync.Mutex),
-		connectDone:    make(chan bool),
 
 		suite:          suite,
 		g:              suite,
-		rand:           rand,
 		sk:             sk,
 		pk:             pk,
 		pks:            make([]abstract.Point, len(servers)),
@@ -150,12 +150,13 @@ func NewServer(addr string, port int, id int, servers []string) *Server {
 ////////////////////////////////
 
 func (s *Server) runHandlers() {
-	<-s.connectDone
+	//<-s.connectDone
 	<-s.regDone
 	runHandler(s.handleRequests)
 	runHandler(s.gatherUploads)
 	runHandler(s.shuffleUploads)
 	runHandler(s.handleResponses)
+	s.running <- true
 }
 
 func (s *Server) handleRequests(round int) {
@@ -185,19 +186,21 @@ func (s *Server) handleRequests(round int) {
 
 func (s *Server) handleResponses(round int) {
 	allBlocks := <-s.rounds[round].dblocksChan
+	var wg sync.WaitGroup
 	for i := 0; i < s.totalClients; i++ {
 		if s.clientMap[i] == s.id {
 			continue
 		}
 		//if it doesnt belong to me, xor things and send it over
-		go func(i int, sid int) {
+		wg.Add(1)
+		go func(i int, rpcServer *rpc.Client) {
+			defer wg.Done()
 			res := ComputeResponse(allBlocks, s.masks[i], s.secrets[i])
-			//fmt.Println(s.id, "mask for", i, s.masks[i])
 			rand := s.suite.Cipher(s.secrets[i])
 			rand.Read(s.secrets[i])
 			rand = s.suite.Cipher(s.masks[i])
 			rand.Read(s.masks[i])
-			fmt.Println(s.id, round, "mask", i, s.masks[i])
+			//fmt.Println(s.id, round, "mask", i, s.masks[i])
 			cb := ClientBlock {
 				CId: i,
 				SId: s.id,
@@ -206,12 +209,13 @@ func (s *Server) handleResponses(round int) {
 					Round: round,
 				},
 			}
-			err := s.rpcServers[sid].Call("Server.PutClientBlock", cb, nil)
+			err := rpcServer.Call("Server.PutClientBlock", cb, nil)
 			if err != nil {
 				log.Fatal("Couldn't put block: ", err)
 			}
-		} (i, s.clientMap[i])
+		} (i, s.rpcServers[s.clientMap[i]])
 	}
+	wg.Wait()
 
 	//store it on this server as well
 	s.rounds[round].allBlocks = allBlocks
@@ -272,7 +276,8 @@ func (s *Server) shuffleUploads(round int) {
 	}
 
 	//TODO: need to send ybar and proofs out out eventually
-	pi := GeneratePI(s.totalClients, s.rand)
+	rand := s.suite.Cipher(abstract.RandomKey)
+	pi := GeneratePI(s.totalClients, rand)
 
 	HXbarss := make([][][]abstract.Point, len(s.servers))
 	HYbarss := make([][][]abstract.Point, len(s.servers))
@@ -395,10 +400,11 @@ func (s *Server) shuffle(pi []int, Xs [][]abstract.Point, Ys [][]abstract.Point,
 	var wg sync.WaitGroup
 	for i := range decs {
 		wg.Add(1)
-		go func (i int) {
+		go func (i int, suite abstract.Suite, g abstract.Group, sk abstract.Secret) {
 			defer wg.Done()
-			Xbars[i], Ybars[i], provers[i] = shuffle.Shuffle2(pi, s.g, nil, pk, Xs[i], Ys[i], s.rand)
-			prf, err := proof.HashProve(s.suite, "PairShuffle", s.rand, provers[i])
+			rand := suite.Cipher(abstract.RandomKey)
+			Xbars[i], Ybars[i], provers[i] = shuffle.Shuffle2(pi, g, nil, pk, Xs[i], Ys[i], rand)
+			prf, err := proof.HashProve(suite, "PairShuffle", rand, provers[i])
 			if err != nil {
 				panic("Shuffle proof failed: " + err.Error())
 			}
@@ -413,11 +419,11 @@ func (s *Server) shuffle(pi []int, Xs [][]abstract.Point, Ys [][]abstract.Point,
 					defer decWG.Done()
 					c1 := Xbars[i][j]
 					c2 := Ybars[i][j]
-					decs[i][j] = Decrypt(s.g, c1, c2, s.sk)
+					decs[i][j] = Decrypt(g, c1, c2, sk)
 				} (i, j)
 			}
 			decWG.Wait()
-		} (i)
+		} (i, s.suite, s.g, s.sk)
 	}
 	wg.Wait()
 
@@ -513,6 +519,7 @@ func (s *Server) RegisterDone2(numClients int, _ *int) error {
 	}
 	s.regDone <- true
 	fmt.Println(s.id, "Register done")
+	<-s.running
 	return nil
 }
 
@@ -522,8 +529,7 @@ func (s *Server) connectServers() {
 		var rpcServer *rpc.Client
 		var err error = errors.New("")
 		for ; err != nil ; {
-			if i == s.id {
-				//make a local rpc
+			if i == s.id { //make a local rpc
 				addr := fmt.Sprintf("127.0.0.1:%d", s.port)
 				rpcServer, err = rpc.Dial("tcp", addr)
 			} else {
@@ -556,7 +562,7 @@ func (s *Server) connectServers() {
 		s.nextPk = s.pk
 	}
 	s.rpcServers = rpcServers
-	s.connectDone <- true
+	//s.connectDone <- true
 }
 
 func (s *Server) GetNumClients(_ int, num *int) error {
@@ -574,8 +580,9 @@ func (s *Server) GetPK(_ int, pk *[]byte) error {
 
 func (s *Server) shareSecret(clientPublic abstract.Point) (abstract.Point, abstract.Point) {
 	s.secretLock.Lock()
+	rand := s.suite.Cipher(abstract.RandomKey)
 	gen := s.g.Point().Base()
-	secret := s.g.Secret().Pick(s.rand)
+	secret := s.g.Secret().Pick(rand)
 	public := s.g.Point().Mul(gen, secret)
 	sharedSecret := s.g.Point().Mul(clientPublic, secret)
 	s.secretLock.Unlock()
@@ -585,7 +592,7 @@ func (s *Server) shareSecret(clientPublic abstract.Point) (abstract.Point, abstr
 func (s *Server) ShareMask(clientDH *ClientDH, serverPub *[]byte) error {
 	pub, shared := s.shareSecret(UnmarshalPoint(s.suite, clientDH.Public))
 	s.masks[clientDH.Id] = MarshalPoint(shared)
-	fmt.Println(s.id, "mask", clientDH.Id, MarshalPoint(shared))
+	//fmt.Println(s.id, "mask", clientDH.Id, MarshalPoint(shared))
 	// s.masks[clientDH.Id] = make([]byte, len(MarshalPoint(shared)))
 	// s.masks[clientDH.Id][clientDH.Id] = 1
 	*serverPub = MarshalPoint(pub)
@@ -747,15 +754,8 @@ func (s *Server) MainLoop(_ int, _ *int) error {
 		panic("Cannot starting listening to the port")
 	}
 	go rpcServer.Accept(l)
-
+	s.connectServers()
 	go s.runHandlers()
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		s.connectServers()
-	} ()
-	wg.Wait()
 
 	return nil
 }
@@ -805,9 +805,13 @@ func main() {
 	if err != nil {
 		panic("Cannot starting listening to the port")
 	}
-	go s.connectServers()
+
+	go rpcServer.Accept(l)
+	s.connectServers()
 	fmt.Println("Starting server", *id)
 	s.runHandlers()
-	rpcServer.Accept(l)
+	fmt.Println("Handler running", *id)
+
+	Wait()
 }
 

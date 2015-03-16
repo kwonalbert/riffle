@@ -90,16 +90,16 @@ L:
         return response
 }
 
-func SliceEquals(X, Y []byte) bool {
-	if len(X) != len(Y) {
-		return false
-	}
-	for i := range X {
-		if X[i] != Y[i] {
-			return false
+func ReverseMap(m map[int]int) map[int][]int {
+	res := make(map[int][]int)
+	for k, v := range m {
+		if res[v] == nil {
+			res[v] = []int{k}
+		} else {
+			res[v] = append(res[v], k)
 		}
 	}
-	return true
+	return res
 }
 
 func GeneratePI(size int, rand cipher.Stream) []int {
@@ -205,6 +205,18 @@ func Wait() {
 	var w sync.WaitGroup
 	w.Add(1)
 	w.Wait()
+}
+
+func SliceEquals(X, Y []byte) bool {
+	if len(X) != len(Y) {
+		return false
+	}
+	for i := range X {
+		if X[i] != Y[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TimeTrack(start time.Time, name string) {
