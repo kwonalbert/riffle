@@ -42,7 +42,7 @@ type Server struct {
 	sk              abstract.Secret //secret and public elgamal key
 	pk              abstract.Point
 	pks             []abstract.Point //all servers pks
-	nextPk          abstract.Point
+	nextPks         []abstract.Point
 	ephSecret       abstract.Secret
 
 	//clients
@@ -130,6 +130,7 @@ func NewServer(addr string, port int, id int, servers []string) *Server {
 		sk:             sk,
 		pk:             pk,
 		pks:            make([]abstract.Point, len(servers)),
+		nextPks:        make([]abstract.Point, len(servers)),
 		ephSecret:      ephSecret,
 
 		clientMap:      make(map[int]int),
@@ -333,11 +334,7 @@ func (s *Server) shuffleUploads(round int) {
 			shuffleWG.Add(1)
 			go func(i int) {
 				defer shuffleWG.Done()
-				pk := s.pk
-				for j := 1; j <= i; j++ {
-					pk = s.g.Point().Add(pk, s.pks[s.id + j])
-				}
-				Xbarsss[i], Ybarsss[i], Hdecss[i], prfss[i] = s.shuffle(pi, Xsss[i], Ysss[i], hashChunks, pk)
+				Xbarsss[i], Ybarsss[i], Hdecss[i], prfss[i] = s.shuffle(pi, Xsss[i], Ysss[i], hashChunks, s.nextPks[i])
 			} (i)
 		}
 		shuffleWG.Wait()
@@ -614,6 +611,13 @@ func (s *Server) connectServers() {
 		} (i, rpcServer)
 	}
 	wg.Wait()
+	for i := 0; i < len(s.servers)-s.id; i++ {
+		pk := s.pk
+		for j := 1; j <= i; j++ {
+			pk = s.g.Point().Add(pk, s.pks[s.id + j])
+		}
+		s.nextPks[i] = pk
+	}
 	s.rpcServers = rpcServers
 	//s.connectDone <- true
 }
