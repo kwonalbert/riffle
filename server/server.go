@@ -34,13 +34,13 @@ type Server struct {
 	connectDone     chan bool
 	running         chan bool
 	secretLock      *sync.Mutex
-	pkLock          *sync.Mutex //avoid data race in go
 
 	//crypto
 	suite           abstract.Suite
 	g               abstract.Group
 	sk              abstract.Secret //secret and public elgamal key
 	pk              abstract.Point
+	pkBin           []byte
 	pks             []abstract.Point //all servers pks
 	nextPks         []abstract.Point
 	nextPksBin      [][]byte
@@ -90,6 +90,7 @@ func NewServer(addr string, port int, id int, servers []string) *Server {
 	rand := suite.Cipher(abstract.RandomKey)
 	sk := suite.Secret().Pick(rand)
 	pk := suite.Point().Mul(nil, sk)
+	pkBin := MarshalPoint(pk)
 	ephSecret := suite.Secret().Pick(rand)
 
 	rounds := make([]*Round, MaxRounds)
@@ -129,12 +130,12 @@ func NewServer(addr string, port int, id int, servers []string) *Server {
 		connectDone:    make(chan bool),
 		running:        make(chan bool),
 		secretLock:     new(sync.Mutex),
-		pkLock:         new(sync.Mutex),
 
 		suite:          suite,
 		g:              suite,
 		sk:             sk,
 		pk:             pk,
+		pkBin:          pkBin,
 		pks:            make([]abstract.Point, len(servers)),
 		nextPks:        make([]abstract.Point, len(servers)),
 		nextPksBin:     make([][]byte, len(servers)),
@@ -563,7 +564,7 @@ func (s *Server) RegisterDone2(numClients int, _ *int) error {
 	for r := range s.maskss {
 		s.maskss[r] = make([][]byte, numClients)
 		s.secretss[r] = make([][]byte, numClients)
-		for i := range s.maskss {
+		for i := range s.maskss[r] {
 			s.maskss[r][i] = make([]byte, SecretSize)
 			s.secretss[r][i] = make([]byte, SecretSize)
 		}
@@ -652,10 +653,7 @@ func (s *Server) GetNumClients(_ int, num *int) error {
 }
 
 func (s *Server) GetPK(_ int, pk *[]byte) error {
-	s.pkLock.Lock()
-	//tmp := s.pk //avoid data race
-	*pk = MarshalPoint(s.pk)
-	s.pkLock.Unlock()
+	*pk = s.pkBin
 	return nil
 }
 
