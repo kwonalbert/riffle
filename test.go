@@ -47,7 +47,7 @@ func setup(numServers int, numClients int) ([]*Server, []*Client) {
 			c := NewClient(ss, ServerAddrs[i%len(ServerAddrs)])
 			clients[i] = c
 			c.Register(0)
-			c.RegisterDone()
+			c.RegisterDone(0)
 			c.ShareSecret()
 		} (i)
 	}

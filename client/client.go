@@ -55,7 +55,7 @@ type Client struct {
 func NewClient(servers []string, myServer string) *Client {
 	suite := edwards.NewAES128SHA256Ed25519(false)
 
-	myServerIdx := 0
+	myServerIdx := -1
 	rpcServers := make([]*rpc.Client, len(servers))
 	for i := range rpcServers {
 		fmt.Println("client connecting to", servers[i])
@@ -141,9 +141,9 @@ func (c *Client) Register(idx int) {
 	c.id = id
 }
 
-func (c *Client) RegisterDone() {
+func (c *Client) RegisterDone(idx int) {
 	var totalClients int
-	err := c.rpcServers[c.myServer].Call("Server.GetNumClients", 0, &totalClients)
+	err := c.rpcServers[idx].Call("Server.GetNumClients", 0, &totalClients)
 	if err != nil {
 		log.Fatal("Couldn't get number of clients")
 	}
@@ -487,7 +487,7 @@ func main() {
 
 	c := NewClient(ss, ss[*s])
 	c.Register(0)
-	c.RegisterDone()
+	c.RegisterDone(0)
 	fmt.Println(c.id, "Sharing secret...")
 	c.ShareSecret()
 
