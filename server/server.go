@@ -43,6 +43,7 @@ type Server struct {
 	pk              abstract.Point
 	pks             []abstract.Point //all servers pks
 	nextPks         []abstract.Point
+	nextPksBin      [][]byte
 	ephSecret       abstract.Secret
 
 	//clients
@@ -68,6 +69,7 @@ type Round struct {
 	//uploading
 	ublockChan2     chan UpBlock
 	shuffleChan     chan InternalUpload //collect all uploads together
+	auxProofChan    []chan AuxProof
 
 	//downloading
 	upHashes        [][]byte
@@ -102,12 +104,16 @@ func NewServer(addr string, port int, id int, servers []string) *Server {
 
 			ublockChan2:    nil,
 			shuffleChan:    make(chan InternalUpload),
+			auxProofChan:   make([]chan AuxProof, len(servers)),
 
 			upHashes:       nil,
 			dblocksChan:    make(chan []Block),
 			blocksRdy:      nil,
 			upHashesRdy:    nil,
 			xorsChan:       make([]map[int](chan Block), len(servers)),
+		}
+		for i := range r.auxProofChan {
+			r.auxProofChan[i] = make(chan AuxProof, len(servers))
 		}
 		rounds[i] = &r
 	}
@@ -131,6 +137,7 @@ func NewServer(addr string, port int, id int, servers []string) *Server {
 		pk:             pk,
 		pks:            make([]abstract.Point, len(servers)),
 		nextPks:        make([]abstract.Point, len(servers)),
+		nextPksBin:     make([][]byte, len(servers)),
 		ephSecret:      ephSecret,
 
 		clientMap:      make(map[int]int),
@@ -274,17 +281,43 @@ func (s *Server) gatherUploads(round int) {
 		Round: allUploads[0].Round,
 	}
 
+	iu.Xsss = append([][][][]byte{nil}, iu.Xsss ...)
+	iu.Ysss = append([][][][]byte{nil}, iu.Ysss ...)
+
+	aux := AuxProof {
+		OrigXsss: Xsss,
+		OrigYsss: Ysss,
+		OrigDXs:  DXs,
+		OrigDYs:  DYs,
+		SId:      s.id,
+		Round:    allUploads[0].Round,
+	}
+
+	var wg sync.WaitGroup
+	for _, rpcServer := range s.rpcServers {
+		wg.Add(1)
+		go func(rpcServer *rpc.Client) {
+			defer wg.Done()
+			err := rpcServer.Call("Server.PutAuxProof", &aux, nil)
+			if err != nil {
+				log.Fatal("Failed uploading shuffled and decoded blocks: ", err)
+			}
+		} (rpcServer)
+	}
+	wg.Wait()
+
 	//fmt.Println(s.id, "done gathering", round)
 	s.rounds[round].shuffleChan <- iu
 }
 
 func (s *Server) shuffleUploads(round int) {
 	uploads := <-s.rounds[round].shuffleChan
+
 	//fmt.Println(s.id, "shuffle start: ", round)
 
 	//shuffle and reblind
 
-	hashChunks := len(uploads.Xsss[0])
+	hashChunks := len(uploads.Xsss[1])
 	serversLeft := len(s.servers)-s.id
 	// for _, upload := range allUploads {
 	// 	if hashChunks != len(upload.HC1[0])  {
@@ -301,8 +334,8 @@ func (s *Server) shuffleUploads(round int) {
 			Xsss[i][j] = make([]abstract.Point, s.totalClients)
 			Ysss[i][j] = make([]abstract.Point, s.totalClients)
 			for k := range Xsss[i][j] {
-				Xsss[i][j][k] = UnmarshalPoint(s.suite, uploads.Xsss[i][j][k])
-				Ysss[i][j][k] = UnmarshalPoint(s.suite, uploads.Ysss[i][j][k])
+				Xsss[i][j][k] = UnmarshalPoint(s.suite, uploads.Xsss[i+1][j][k])
+				Ysss[i][j][k] = UnmarshalPoint(s.suite, uploads.Ysss[i+1][j][k])
 			}
 		}
 	}
@@ -332,10 +365,10 @@ func (s *Server) shuffleUploads(round int) {
 		var shuffleWG sync.WaitGroup
 		for i := 0; i < serversLeft; i++ {
 			shuffleWG.Add(1)
-			go func(i int) {
+			go func(i int, pk abstract.Point) {
 				defer shuffleWG.Done()
-				Xbarsss[i], Ybarsss[i], Hdecss[i], prfss[i] = s.shuffle(pi, Xsss[i], Ysss[i], hashChunks, s.nextPks[i])
-			} (i)
+				Xbarsss[i], Ybarsss[i], Hdecss[i], prfss[i] = s.shuffle(pi, Xsss[i], Ysss[i], hashChunks, pk)
+			} (i, s.nextPks[i])
 		}
 		shuffleWG.Wait()
 	} ()
@@ -372,75 +405,61 @@ func (s *Server) shuffleUploads(round int) {
 		}
 		hashes[i] = hash
 	}
-	for i := range hashes {
-		h := s.suite.Hash()
-		h.Write(decBlocks[i])
-		hash := h.Sum(nil)
-		if !SliceEquals(hash, hashes[i]) {
-			log.Fatal("Hash mismatch!")
-		}
+
+	iu := InternalUpload {
+		Xsss: make([][][][]byte, serversLeft),
+		Ysss: make([][][][]byte, serversLeft),
+		DXs:  nil,
+		DYs:  nil,
+		BCs:  decBlocks,
+		Hs:   hashes,
+		SId:  s.id,
+		Round: round,
+
+		Ybarsss:  make([][][][]byte, serversLeft),
+		Proofss:  prfss,
+		Keys:     make([][]byte, serversLeft),
 	}
 
-	if s.id == len(s.servers) - 1 {
-		blocks := make([]Block, s.totalClients)
-		//last server to shuffle, broadcast
-		for i := range blocks {
-			blocks[i] = Block {
-				Hash:  hashes[i],
-				Block: decBlocks[i],
-				Round: round,
-			}
-			// if round == 0 {
-			//  	fmt.Println(round, "final block: ", decBlocks[i], hashes[i])
-			// }
-		}
-
-		var wg sync.WaitGroup
-		for _, rpcServer := range s.rpcServers {
-			wg.Add(1)
-			go func(rpcServer *rpc.Client) {
-				defer wg.Done()
-				err := rpcServer.Call("Server.PutUploadedBlocks", &blocks, nil)
-				if err != nil {
-					log.Fatal("Failed uploading shuffled and decoded blocks: ", err)
-				}
-			} (rpcServer)
-		}
-		wg.Wait()
-	} else {
-		iu := InternalUpload {
-			Xsss: make([][][][]byte, serversLeft-1),
-			Ysss: make([][][][]byte, serversLeft-1),
-			DXs:  make([][]byte, s.totalClients),
-			DYs:  make([][]byte, s.totalClients),
-			BCs:  decBlocks,
-			Round: round,
-		}
-		for i := range iu.Xsss {
-			iu.Xsss[i] = make([][][]byte, hashChunks)
-			iu.Ysss[i] = make([][][]byte, hashChunks)
-			for j := range iu.Xsss[i] {
-				iu.Xsss[i][j] = make([][]byte, s.totalClients)
-				iu.Ysss[i][j] = make([][]byte, s.totalClients)
-				for k := range iu.Xsss[i][j] {
-					iu.Xsss[i][j][k] = MarshalPoint(Xbarsss[i+1][j][k])
-					iu.Ysss[i][j][k] = MarshalPoint(Hdecss[i+1][j][k])
-				}
+	for i := range iu.Xsss {
+		iu.Xsss[i] = make([][][]byte, hashChunks)
+		iu.Ysss[i] = make([][][]byte, hashChunks)
+		iu.Ybarsss[i] = make([][][]byte, hashChunks)
+		for j := range iu.Xsss[i] {
+			iu.Xsss[i][j] = make([][]byte, s.totalClients)
+			iu.Ysss[i][j] = make([][]byte, s.totalClients)
+			iu.Ybarsss[i][j] = make([][]byte, s.totalClients)
+			for k := range iu.Xsss[i][j] {
+				iu.Xsss[i][j][k] = MarshalPoint(Xbarsss[i][j][k])
+				iu.Ysss[i][j][k] = MarshalPoint(Hdecss[i][j][k])
+				iu.Ybarsss[i][j][k] = MarshalPoint(Ybarsss[i][j][k])
 			}
 		}
+		iu.Keys[i] = s.nextPksBin[i]
+	}
 
+	if s.id != len(s.servers) - 1 {
+		iu.DXs = make([][]byte, s.totalClients)
+		iu.DYs =  make([][]byte, s.totalClients)
 		for i := range iu.DXs {
 			dh1, dh2 := EncryptPoint(s.g, ephKeys[i], s.pks[s.id+1])
 			iu.DXs[i] = MarshalPoint(dh1)
 			iu.DYs[i] = MarshalPoint(dh2)
 		}
-
-		err := s.rpcServers[s.id+1].Call("Server.ShuffleBlocks", &iu, nil)
-		if err != nil {
-			log.Fatal("Failed requesting shuffle: ", err)
-		}
-
 	}
+
+	for _, rpcServer := range s.rpcServers {
+		wg.Add(1)
+		go func(rpcServer *rpc.Client) {
+			defer wg.Done()
+			err := rpcServer.Call("Server.ShareServerBlocks", &iu, nil)
+			if err != nil {
+				log.Fatal("Failed uploading shuffled and decoded blocks: ", err)
+			}
+		} (rpcServer)
+	}
+	wg.Wait()
+
 	//fmt.Println(s.id, "shuffle done: ", round)
 }
 
@@ -453,7 +472,7 @@ func (s *Server) shuffle(pi []int, Xs [][]abstract.Point, Ys [][]abstract.Point,
 	prfs := make([][]byte, numChunks)
 
 
-	//do the shuffle, and blind using next server's keys
+	//do the shuffle, and blind using the next server's keys
 	//everyone shares the same group
 	var wg sync.WaitGroup
 	for i := range decs {
@@ -617,6 +636,7 @@ func (s *Server) connectServers() {
 			pk = s.g.Point().Add(pk, s.pks[s.id + j])
 		}
 		s.nextPks[i] = pk
+		s.nextPksBin[i] = MarshalPoint(pk)
 	}
 	s.rpcServers = rpcServers
 	//s.connectDone <- true
@@ -630,6 +650,7 @@ func (s *Server) GetNumClients(_ int, num *int) error {
 
 func (s *Server) GetPK(_ int, pk *[]byte) error {
 	s.pkLock.Lock()
+	//tmp := s.pk //avoid data race
 	*pk = MarshalPoint(s.pk)
 	s.pkLock.Unlock()
 	return nil
@@ -720,9 +741,98 @@ func (s *Server) UploadBlock2(block *UpBlock, _*int) error {
 	return nil
 }
 
-func (s *Server) ShuffleBlocks(iu *InternalUpload, _*int) error {
+func (s *Server) PutAuxProof(aux *AuxProof, _ *int) error {
+	round := aux.Round % MaxRounds
+	s.rounds[round].auxProofChan[aux.SId] <- *aux
+	return nil
+}
+
+func (s *Server) verifyShuffle(iu InternalUpload, aux AuxProof) bool {
+	Xsss := aux.OrigXsss
+	Ysss := aux.OrigYsss
+	Xbarsss := iu.Xsss
+	Ybarsss := iu.Ybarsss
+	prfss := iu.Proofss
+
+	for i := range Xsss {
+		pk := UnmarshalPoint(s.suite, iu.Keys[i])
+		for j := range Xsss[i] {
+			Xs := make([]abstract.Point, len(Xsss[i][j]))
+			Ys := make([]abstract.Point, len(Ysss[i][j]))
+			Xbars := make([]abstract.Point, len(Xbarsss[i][j]))
+			Ybars := make([]abstract.Point, len(Ybarsss[i][j]))
+			for k := range Xsss[i][j] {
+				Xs[k] = UnmarshalPoint(s.suite, Xsss[i][j][k])
+				Ys[k] = UnmarshalPoint(s.suite, Ysss[i][j][k])
+				Xbars[k] = UnmarshalPoint(s.suite, Xbarsss[i][j][k])
+				Ybars[k] = UnmarshalPoint(s.suite, Ybarsss[i][j][k])
+			}
+			v := shuffle.Verifier(s.suite, nil, pk, Xs, Ys, Xbars, Ybars)
+			err := proof.HashVerify(s.suite, "PairShuffle", v, prfss[i][j])
+			if err != nil {
+				log.Println("Shuffle verify failed: ", err)
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func (s *Server) ShareServerBlocks(iu *InternalUpload, correct *bool) error {
 	round := iu.Round % MaxRounds
-	s.rounds[round].shuffleChan <- *iu
+	blocks := make([]Block, s.totalClients)
+	for i := range blocks {
+		blocks[i] = Block {
+			Hash:  iu.Hs[i],
+			Block: iu.BCs[i],
+			Round: round,
+		}
+	}
+
+	aux := <-s.rounds[round].auxProofChan[iu.SId]
+	//fmt.Println(s.id, round, "aux:", aux.OrigXsss[0][0][0])
+	good := s.verifyShuffle(*iu, aux)
+	for i := range blocks {
+		h := s.suite.Hash()
+		h.Write(blocks[i].Block)
+		hash := h.Sum(nil)
+		good = good && SliceEquals(hash, blocks[i].Hash)
+	}
+	if !good {
+		log.Fatal(s.id, round, " Proving failed!")
+	}
+	if iu.SId != len(s.servers) - 1 {
+		aux = AuxProof {
+			OrigXsss: iu.Xsss[1:],
+			OrigYsss: iu.Ysss[1:],
+			OrigDXs:  iu.DXs,
+			OrigDYs:  iu.DYs,
+			SId:      iu.SId + 1,
+			Round:    round,
+		}
+		s.rounds[round].auxProofChan[aux.SId] <- aux
+	}
+
+	if iu.SId == len(s.servers) - 1 {
+		for i := range blocks {
+			s.rounds[round].upHashes[i] = blocks[i].Hash
+		}
+		for i := range s.rounds[round].upHashesRdy {
+			if s.clientMap[i] != s.id {
+				continue
+			}
+			go func(i int, round int) {
+				s.rounds[round].upHashesRdy[i] <- true
+			} (i, round)
+		}
+		s.rounds[round].dblocksChan <- blocks
+	} else if iu.SId == s.id - 1 {
+		iu.Ybarsss = nil
+		iu.Proofss = nil
+		iu.Keys = nil
+		s.rounds[round].shuffleChan <- *iu
+	}
+	*correct = good
 	return nil
 }
 
@@ -738,9 +848,9 @@ func (s *Server) GetUpHashes(args *RequestArg, hashes *[][]byte) error {
 }
 
 func (s *Server) GetResponse(cmask ClientMask, response *[]byte) error {
+	round := cmask.Round % MaxRounds
 	otherBlocks := make([][]byte, len(s.servers))
 	var wg sync.WaitGroup
-	round := cmask.Round % MaxRounds
 	for i := range otherBlocks {
 		if i == s.id {
 			otherBlocks[i] = make([]byte, BlockSize)
@@ -769,33 +879,6 @@ func (s *Server) PutClientBlock(cblock ClientBlock, _ *int) error {
 	block := cblock.Block
 	round := block.Round % MaxRounds
 	s.rounds[round].xorsChan[cblock.SId][cblock.CId] <- block
-	return nil
-}
-
-//used to push the uploaded blocks from the final shuffle server
-func (s *Server) PutUploadedBlocks(blocks *[]Block, _ *int) error {
-	round := (*blocks)[0].Round % MaxRounds
-	for i := range *blocks {
-		h := s.suite.Hash()
-		h.Write((*blocks)[i].Block)
-		hash := h.Sum(nil)
-		s.rounds[round].upHashes[i] = hash
-		//fmt.Println("block", (*blocks)[i].Block, s.rounds[round].upHashes[i])
-		if !SliceEquals(hash, (*blocks)[i].Hash) {
-			log.Fatal("Hash mismatch!")
-		}
-	}
-
-	for i := range s.rounds[round].upHashesRdy {
-		if s.clientMap[i] != s.id {
-			continue
-		}
-		go func(i int, round int) {
-			s.rounds[round].upHashesRdy[i] <- true
-		} (i, round)
-	}
-
-	s.rounds[round].dblocksChan <- *blocks
 	return nil
 }
 

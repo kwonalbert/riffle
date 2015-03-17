@@ -69,5 +69,20 @@ type InternalUpload struct {
 	DXs             [][]byte
 	DYs             [][]byte
 	BCs             [][]byte
+	Hs              [][]byte
+	SId             int
+	Round           int
+
+	Ybarsss         [][][][]byte
+	Proofss         [][][]byte
+	Keys            [][]byte
+}
+
+type AuxProof struct {
+	OrigXsss        [][][][]byte
+	OrigYsss        [][][][]byte
+	OrigDXs         [][]byte
+	OrigDYs         [][]byte
+	SId             int
 	Round           int
 }
