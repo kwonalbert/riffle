@@ -62,3 +62,12 @@ type RequestArg struct {
 	Id              int
 	Round           int
 }
+
+type InternalUpload struct {
+	Xsss            [][][][]byte
+	Ysss            [][][][]byte
+	DXs             [][]byte
+	DYs             [][]byte
+	BCs             [][]byte
+	Round           int
+}

@@ -67,7 +67,7 @@ type Round struct {
 
 	//uploading
 	ublockChan2     chan UpBlock
-	shuffleChan     chan []UpBlock //collect all uploads together
+	shuffleChan     chan InternalUpload //collect all uploads together
 
 	//downloading
 	upHashes        [][]byte
@@ -101,7 +101,7 @@ func NewServer(addr string, port int, id int, servers []string) *Server {
 			reqHashesRdy:   nil,
 
 			ublockChan2:    nil,
-			shuffleChan:    make(chan []UpBlock),
+			shuffleChan:    make(chan InternalUpload),
 
 			upHashes:       nil,
 			dblocksChan:    make(chan []Block),
@@ -235,56 +235,91 @@ func (s *Server) gatherUploads(round int) {
 	for i := 0; i < s.totalClients; i++ {
 		allUploads[i] = <-s.rounds[round].ublockChan2
 	}
+
+	hashChunks := len(allUploads[0].HC1[0])
+	serversLeft := len(s.servers)-s.id
+
+	Xsss := make([][][][]byte, serversLeft)
+	Ysss := make([][][][]byte, serversLeft)
+
+	for i := range Xsss {
+		Xsss[i] = make([][][]byte, hashChunks)
+		Ysss[i] = make([][][]byte, hashChunks)
+		for j := range Xsss[i] {
+			Xsss[i][j] = make([][]byte, s.totalClients)
+			Ysss[i][j] = make([][]byte, s.totalClients)
+			for k := range Xsss[i][j] {
+				Xsss[i][j][k] = allUploads[k].HC1[i][j]
+				Ysss[i][j][k] = allUploads[k].HC2[i][j]
+			}
+		}
+	}
+
+	DXs := make([][]byte, s.totalClients)
+	DYs := make([][]byte, s.totalClients)
+	BCs := make([][]byte, s.totalClients)
+	for i := range DXs {
+		DXs[i] = allUploads[i].DH1
+		DYs[i] = allUploads[i].DH2
+		BCs[i] = allUploads[i].BC
+	}
+
+	iu := InternalUpload {
+		Xsss: Xsss,
+		Ysss: Ysss,
+		DXs:  DXs,
+		DYs:  DYs,
+		BCs:  BCs,
+		Round: allUploads[0].Round,
+	}
+
 	//fmt.Println(s.id, "done gathering", round)
-	s.rounds[round].shuffleChan <- allUploads
+	s.rounds[round].shuffleChan <- iu
 }
 
 func (s *Server) shuffleUploads(round int) {
-	allUploads := <-s.rounds[round].shuffleChan
+	uploads := <-s.rounds[round].shuffleChan
 	//fmt.Println(s.id, "shuffle start: ", round)
 
 	//shuffle and reblind
 
-	hashChunks := len(allUploads[0].HC1[0])
+	hashChunks := len(uploads.Xsss[0])
+	serversLeft := len(s.servers)-s.id
 	// for _, upload := range allUploads {
 	// 	if hashChunks != len(upload.HC1[0])  {
 	// 		panic("Different chunk lengths")
 	// 	}
 	// }
 
-	serversLeft := len(s.servers)-s.id
-
-	HXss := make([][][]abstract.Point, serversLeft)
-	HYss := make([][][]abstract.Point, serversLeft)
-
-	for i := range HXss {
-		HXss[i] = make([][]abstract.Point, hashChunks)
-		HYss[i] = make([][]abstract.Point, hashChunks)
-		for j := range HXss[i] {
-			HXss[i][j] = make([]abstract.Point, s.totalClients)
-			HYss[i][j] = make([]abstract.Point, s.totalClients)
-			for k := range HXss[i][j] {
-				HXss[i][j][k] = UnmarshalPoint(s.suite, allUploads[k].HC1[i][j])
-				HYss[i][j][k] = UnmarshalPoint(s.suite, allUploads[k].HC2[i][j])
+	Xsss := make([][][]abstract.Point, serversLeft)
+	Ysss := make([][][]abstract.Point, serversLeft)
+	for i := range Xsss {
+		Xsss[i] = make([][]abstract.Point, hashChunks)
+		Ysss[i] = make([][]abstract.Point, hashChunks)
+		for j := range Xsss[i] {
+			Xsss[i][j] = make([]abstract.Point, s.totalClients)
+			Ysss[i][j] = make([]abstract.Point, s.totalClients)
+			for k := range Xsss[i][j] {
+				Xsss[i][j][k] = UnmarshalPoint(s.suite, uploads.Xsss[i][j][k])
+				Ysss[i][j][k] = UnmarshalPoint(s.suite, uploads.Ysss[i][j][k])
 			}
 		}
 	}
-
-	DX := make([]abstract.Point, s.totalClients)
-	DY := make([]abstract.Point, s.totalClients)
-	for j := 0; j < s.totalClients; j++ {
-		DX[j] = UnmarshalPoint(s.suite, allUploads[j].DH1)
-		DY[j] = UnmarshalPoint(s.suite, allUploads[j].DH2)
+	DXs := make([]abstract.Point, s.totalClients)
+	DYs := make([]abstract.Point, s.totalClients)
+	for i := range DXs {
+		DXs[i] = UnmarshalPoint(s.suite, uploads.DXs[i])
+		DYs[i] = UnmarshalPoint(s.suite, uploads.DYs[i])
 	}
 
 	//TODO: need to send ybar and proofs out out eventually
 	rand := s.suite.Cipher(abstract.RandomKey)
 	pi := GeneratePI(s.totalClients, rand)
 
-	HXbarss := make([][][]abstract.Point, serversLeft)
-	HYbarss := make([][][]abstract.Point, serversLeft)
+	Xbarsss := make([][][]abstract.Point, serversLeft)
+	Ybarsss := make([][][]abstract.Point, serversLeft)
 	Hdecss := make([][][]abstract.Point, serversLeft)
-	prfs := make([][][]byte, serversLeft)
+	prfss := make([][][]byte, serversLeft)
 
 	ephKeys := make([]abstract.Point, s.totalClients)
 	decBlocks := make([][]byte, s.totalClients)
@@ -302,7 +337,7 @@ func (s *Server) shuffleUploads(round int) {
 				for j := 1; j <= i; j++ {
 					pk = s.g.Point().Add(pk, s.pks[s.id + j])
 				}
-				HXbarss[i], HYbarss[i], Hdecss[i], prfs[i] = s.shuffle(pi, HXss[i], HYss[i], hashChunks, pk)
+				Xbarsss[i], Ybarsss[i], Hdecss[i], prfss[i] = s.shuffle(pi, Xsss[i], Ysss[i], hashChunks, pk)
 			} (i)
 		}
 		shuffleWG.Wait()
@@ -314,10 +349,10 @@ func (s *Server) shuffleUploads(round int) {
 			aesWG.Add(1)
 			go func(j int) {
 				defer aesWG.Done()
-				ephKey := Decrypt(s.g, DX[pi[j]], DY[pi[j]], s.sk)
+				ephKey := Decrypt(s.g, DXs[pi[j]], DYs[pi[j]], s.sk)
 				key := MarshalPoint(s.g.Point().Mul(ephKey, s.ephSecret))
 				//shuffle using pi
-				decBlocks[j] = CounterAES(key, allUploads[pi[j]].BC)
+				decBlocks[j] = CounterAES(key, uploads.BCs[pi[j]])
 				//fmt.Println(s.id, round, "server key", key)
 				//fmt.Println(s.id, round, "server bs", decBlocks[j])
 				ephKeys[j] = ephKey
@@ -376,28 +411,34 @@ func (s *Server) shuffleUploads(round int) {
 		}
 		wg.Wait()
 	} else {
-		nextUploads := make([]UpBlock, s.totalClients)
-		for i := range nextUploads {
-			dh1, dh2 := EncryptPoint(s.g, ephKeys[i], s.pks[s.id+1])
-			upblock := UpBlock {
-				HC1: make([][][]byte, serversLeft-1),
-				HC2: make([][][]byte, serversLeft-1),
-				DH1: MarshalPoint(dh1),
-				DH2: MarshalPoint(dh2),
-				BC:  decBlocks[i],
-				Round: allUploads[i].Round,
-			}
-			for j := 0; j < serversLeft-1; j++ {
-				upblock.HC1[j] = make([][]byte, hashChunks)
-				upblock.HC2[j] = make([][]byte, hashChunks)
-				for k := 0; k < hashChunks; k++ {
-					upblock.HC1[j][k] = MarshalPoint(HXbarss[j+1][k][i])
-					upblock.HC2[j][k] = MarshalPoint(Hdecss[j+1][k][i])
+		iu := InternalUpload {
+			Xsss: make([][][][]byte, serversLeft-1),
+			Ysss: make([][][][]byte, serversLeft-1),
+			DXs:  make([][]byte, s.totalClients),
+			DYs:  make([][]byte, s.totalClients),
+			BCs:  decBlocks,
+			Round: round,
+		}
+		for i := range iu.Xsss {
+			iu.Xsss[i] = make([][][]byte, hashChunks)
+			iu.Ysss[i] = make([][][]byte, hashChunks)
+			for j := range iu.Xsss[i] {
+				iu.Xsss[i][j] = make([][]byte, s.totalClients)
+				iu.Ysss[i][j] = make([][]byte, s.totalClients)
+				for k := range iu.Xsss[i][j] {
+					iu.Xsss[i][j][k] = MarshalPoint(Xbarsss[i+1][j][k])
+					iu.Ysss[i][j][k] = MarshalPoint(Hdecss[i+1][j][k])
 				}
 			}
-			nextUploads[i] = upblock
 		}
-		err := s.rpcServers[s.id+1].Call("Server.ShuffleBlocks", &nextUploads, nil)
+
+		for i := range iu.DXs {
+			dh1, dh2 := EncryptPoint(s.g, ephKeys[i], s.pks[s.id+1])
+			iu.DXs[i] = MarshalPoint(dh1)
+			iu.DYs[i] = MarshalPoint(dh2)
+		}
+
+		err := s.rpcServers[s.id+1].Call("Server.ShuffleBlocks", &iu, nil)
 		if err != nil {
 			log.Fatal("Failed requesting shuffle: ", err)
 		}
@@ -675,9 +716,9 @@ func (s *Server) UploadBlock2(block *UpBlock, _*int) error {
 	return nil
 }
 
-func (s *Server) ShuffleBlocks(blocks *[]UpBlock, _*int) error {
-	round := (*blocks)[0].Round % MaxRounds
-	s.rounds[round].shuffleChan <- *blocks
+func (s *Server) ShuffleBlocks(iu *InternalUpload, _*int) error {
+	round := iu.Round % MaxRounds
+	s.rounds[round].shuffleChan <- *iu
 	return nil
 }
 
@@ -793,6 +834,30 @@ func runHandler(f func(int)) {
 func SetTotalClients(n int) {
 	TotalClients = n
 }
+
+// func invIndex() {
+//		nextUploads := make([]UpBlock, s.totalClients)
+// 		for i := range nextUploads {
+// 			dh1, dh2 := EncryptPoint(s.g, ephKeys[i], s.pks[s.id+1])
+// 			upblock := UpBlock {
+// 				HC1: make([][][]byte, serversLeft-1),
+// 				HC2: make([][][]byte, serversLeft-1),
+// 				DH1: MarshalPoint(dh1),
+// 				DH2: MarshalPoint(dh2),
+// 				BC:  decBlocks[i],
+// 				Round: allUploads[i].Round,
+// 			}
+// 			for j := 0; j < serversLeft-1; j++ {
+// 				upblock.HC1[j] = make([][]byte, hashChunks)
+// 				upblock.HC2[j] = make([][]byte, hashChunks)
+// 				for k := 0; k < hashChunks; k++ {
+// 					upblock.HC1[j][k] = MarshalPoint(HXbarss[j+1][k][i])
+// 					upblock.HC2[j][k] = MarshalPoint(Hdecss[j+1][k][i])
+// 				}
+// 			}
+// 			nextUploads[i] = upblock
+// 		}
+// }
 
 /////////////////////////////////
 //MAIN
