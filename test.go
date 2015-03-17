@@ -58,14 +58,18 @@ func setup(numServers int, numClients int) ([]*Server, []*Client) {
 	for i, s := range servers {
 		masks := s.Masks()
 		secrets := s.Secrets()
-		cmasks := make([][]byte, NumClients)
-		csecrets := make([][]byte, NumClients)
-		for _, c := range clients {
-			cmasks[c.Id()] = c.Masks()[i]
-			csecrets[c.Id()] = c.Secrets()[i]
+		cmasks := make([][][]byte, MaxRounds)
+		csecrets := make([][][]byte, NumClients)
+		for r := range masks {
+			cmasks[r] = make([][]byte, NumClients)
+			csecrets[r] = make([][]byte, NumClients)
+			for _, c := range clients {
+				cmasks[r][c.Id()] = c.Masks()[r][i]
+				csecrets[r][c.Id()] = c.Secrets()[r][i]
+			}
+			compareSecrets(masks[r], cmasks[r])
+			compareSecrets(secrets[r], csecrets[r])
 		}
-		compareSecrets(masks, cmasks)
-		compareSecrets(secrets, csecrets)
 	}
 
 	fmt.Println("Secret shared")

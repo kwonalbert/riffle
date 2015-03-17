@@ -48,8 +48,8 @@ type Client struct {
 
 	//downloading
 	dhashes         chan []byte //hash to download (per round)
-	masks           [][]byte //masks used
-	secrets         [][]byte //secret for data
+	maskss          [][][]byte //masks used
+	secretss        [][][]byte //secret for data
 }
 
 func NewClient(servers []string, myServer string) *Client {
@@ -85,12 +85,17 @@ func NewClient(servers []string, myServer string) *Client {
 	}
 	wg.Wait()
 
-	masks := make([][]byte, len(servers))
-	secrets := make([][]byte, len(servers))
-	for i := 0; i < len(servers); i++ {
-		masks[i] = make([]byte, SecretSize)
-		secrets[i] = make([]byte, SecretSize)
+	maskss := make([][][]byte, MaxRounds)
+	secretss := make([][][]byte, MaxRounds)
+	for r := range maskss {
+		maskss[r] = make([][]byte, len(servers))
+		secretss[r] = make([][]byte, len(servers))
+		for i := range maskss[r] {
+			maskss[r][i] = make([]byte, SecretSize)
+			secretss[r][i] = make([]byte, SecretSize)
+		}
 	}
+
 
 	//id comes from servers
 	c := Client {
@@ -122,8 +127,8 @@ func NewClient(servers []string, myServer string) *Client {
 		ephKeys:        make([]abstract.Point, len(servers)),
 
 		dhashes:        make(chan []byte, MaxRounds),
-		masks:          masks,
-		secrets:        secrets,
+		maskss:         maskss,
+		secretss:       secretss,
 	}
 
 	return &c
@@ -171,6 +176,9 @@ func (c *Client) ShareSecret() {
 		Id: c.id,
 	}
 
+	masks := make([][]byte, len(c.servers))
+	secrets := make([][]byte, len(c.servers))
+
 	var wg sync.WaitGroup
 	for i, rpcServer := range c.rpcServers {
 		wg.Add(1)
@@ -185,16 +193,38 @@ func (c *Client) ShareSecret() {
 			<-call1.Done
 			<-call2.Done
 			<-call3.Done
-			c.masks[i] = MarshalPoint(c.g.Point().Mul(UnmarshalPoint(c.suite, servPub1), secret1))
+			masks[i] = MarshalPoint(c.g.Point().Mul(UnmarshalPoint(c.suite, servPub1), secret1))
 			// c.masks[i] = make([]byte, SecretSize)
 			// c.masks[i][c.id] = 1
-			//c.secrets[i] = MarshalPoint(c.g.Point().Mul(UnmarshalPoint(c.suite, servPub2), secret2))
-			c.secrets[i] = make([]byte, SecretSize)
+			secrets[i] = MarshalPoint(c.g.Point().Mul(UnmarshalPoint(c.suite, servPub2), secret2))
+			//secrets[i] = make([]byte, SecretSize)
 			c.ephKeys[i] = UnmarshalPoint(c.suite, servPub3)
 		} (i, rpcServer, cs1, cs2)
 	}
 	wg.Wait()
 	//fmt.Println(c.id, "masks", c.masks)
+	for r := range c.secretss {
+		for i := range c.secretss[r] {
+			if r == 0 {
+				c.secretss[r][i] = secrets[i]
+			} else {
+				rand := c.suite.Cipher(c.secretss[r-1][i])
+				rand.Read(c.secretss[r][i])
+			}
+		}
+	}
+
+	for r := range c.maskss {
+		for i := range c.maskss[r] {
+			if r == 0 {
+				c.maskss[r][i] = masks[i]
+			} else {
+				rand := c.suite.Cipher(c.maskss[r-1][i])
+				rand.Read(c.maskss[r][i])
+			}
+		}
+	}
+
 }
 
 /////////////////////////////////
@@ -380,15 +410,16 @@ func (c *Client) DownloadBlock(hash []byte) []byte {
 
 func (c *Client) DownloadSlot(slot int) []byte {
 	//all but one server uses the prng technique
+	round := c.downRound % MaxRounds
 	finalMask := make([]byte, SecretSize)
 	SetBit(slot, true, finalMask)
-	mask := Xors(c.masks)
-	Xor(c.masks[c.myServer], mask)
+	mask := Xors(c.maskss[round])
+	Xor(c.maskss[round][c.myServer], mask)
 	Xor(finalMask, mask)
 
 	//one response includes all the secrets
 	response := make([]byte, BlockSize)
-	secretsXor := Xors(c.secrets)
+	secretsXor := Xors(c.secretss[round])
 	cMask := ClientMask {Mask: mask, Id: c.id, Round: c.downRound}
 	call := c.rpcServers[c.myServer].Go("Server.GetResponse", cMask, &response, nil)
 	<-call.Done
@@ -398,14 +429,14 @@ func (c *Client) DownloadSlot(slot int) []byte {
 
 	Xor(secretsXor, response)
 
-	for i := range c.secrets {
-		rand := c.suite.Cipher(c.secrets[i])
-		rand.Read(c.secrets[i])
+	for i := range c.secretss[round] {
+		rand := c.suite.Cipher(c.secretss[round][i])
+		rand.Read(c.secretss[round][i])
 	}
 
-	for i := range c.masks {
-		rand := c.suite.Cipher(c.masks[i])
-		rand.Read(c.masks[i])
+	for i := range c.maskss[round] {
+		rand := c.suite.Cipher(c.maskss[round][i])
+		rand.Read(c.maskss[round][i])
 	}
 
 	//fmt.Println(c.id, c.downRound, "update masks", c.masks)
@@ -457,12 +488,12 @@ func (c *Client) Id() int {
 	return c.id
 }
 
-func (c *Client) Masks() [][]byte {
-	return c.masks
+func (c *Client) Masks() [][][]byte {
+	return c.maskss
 }
 
-func (c *Client) Secrets() [][]byte {
-	return c.secrets
+func (c *Client) Secrets() [][][]byte {
+	return c.secretss
 }
 func (c *Client) RpcServers() []*rpc.Client {
 	return c.rpcServers

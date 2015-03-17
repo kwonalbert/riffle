@@ -24,7 +24,7 @@ var clients []*Client = nil
 var ServerAddrs []string = []string{"127.0.0.1:8000", "127.0.0.1:8001"}
 var Suite = edwards.NewAES128SHA256Ed25519(false)
 const NumClients = 5
-const NumServers = 3
+const NumServers = 2
 
 func TestRounds(t *testing.T) {
 	b := 10

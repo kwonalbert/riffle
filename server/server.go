@@ -50,8 +50,8 @@ type Server struct {
 	clientMap       map[int]int //maps clients to dedicated server
 	numClients      int //#clients connect here
 	totalClients    int //total number of clients (sum of all servers)
-	masks           [][]byte //clients' masks for PIR
-	secrets         [][]byte //shared secret used to xor
+	maskss          [][][]byte //clients' masks for PIR
+	secretss        [][][]byte //shared secret used to xor
 
 	//all rounds
 	rounds          []*Round
@@ -143,8 +143,8 @@ func NewServer(addr string, port int, id int, servers []string) *Server {
 		clientMap:      make(map[int]int),
 		numClients:     0,
 		totalClients:   0,
-		masks:          nil,
-		secrets:        nil,
+		maskss:         nil,
+		secretss:       nil,
 
 		rounds:         rounds,
 	}
@@ -201,14 +201,14 @@ func (s *Server) handleResponses(round int) {
 		}
 		//if it doesnt belong to me, xor things and send it over
 		wg.Add(1)
-		go func(i int, rpcServer *rpc.Client) {
+		go func(i int, rpcServer *rpc.Client, r int) {
 			defer wg.Done()
-			res := ComputeResponse(allBlocks, s.masks[i], s.secrets[i])
-			rand := s.suite.Cipher(s.secrets[i])
-			rand.Read(s.secrets[i])
-			rand = s.suite.Cipher(s.masks[i])
-			rand.Read(s.masks[i])
-			//fmt.Println(s.id, round, "mask", i, s.masks[i])
+			res := ComputeResponse(allBlocks, s.maskss[r][i], s.secretss[r][i])
+			rand := s.suite.Cipher(s.secretss[r][i])
+			rand.Read(s.secretss[r][i])
+			rand = s.suite.Cipher(s.maskss[r][i])
+			rand.Read(s.maskss[r][i])
+			//fmt.Println(s.id, round, "mask", i, s.maskss[i])
 			cb := ClientBlock {
 				CId: i,
 				SId: s.id,
@@ -221,7 +221,7 @@ func (s *Server) handleResponses(round int) {
 			if err != nil {
 				log.Fatal("Couldn't put block: ", err)
 			}
-		} (i, s.rpcServers[s.clientMap[i]])
+		} (i, s.rpcServers[s.clientMap[i]], round)
 	}
 	wg.Wait()
 
@@ -558,12 +558,15 @@ func (s *Server) registerDone() {
 func (s *Server) RegisterDone2(numClients int, _ *int) error {
 	s.totalClients = numClients
 
-	s.masks = make([][]byte, numClients)
-	s.secrets = make([][]byte, numClients)
-
-	for i := range s.masks {
-		s.masks[i] = make([]byte, SecretSize)
-		s.secrets[i] = make([]byte, SecretSize)
+	s.maskss = make([][][]byte, MaxRounds)
+	s.secretss = make([][][]byte, MaxRounds)
+	for r := range s.maskss {
+		s.maskss[r] = make([][]byte, numClients)
+		s.secretss[r] = make([][]byte, numClients)
+		for i := range s.maskss {
+			s.maskss[r][i] = make([]byte, SecretSize)
+			s.secretss[r][i] = make([]byte, SecretSize)
+		}
 	}
 
 	for r := range s.rounds {
@@ -669,18 +672,23 @@ func (s *Server) shareSecret(clientPublic abstract.Point) (abstract.Point, abstr
 
 func (s *Server) ShareMask(clientDH *ClientDH, serverPub *[]byte) error {
 	pub, shared := s.shareSecret(UnmarshalPoint(s.suite, clientDH.Public))
-	s.masks[clientDH.Id] = MarshalPoint(shared)
-	//fmt.Println(s.id, "mask", clientDH.Id, MarshalPoint(shared))
-	// s.masks[clientDH.Id] = make([]byte, len(MarshalPoint(shared)))
-	// s.masks[clientDH.Id][clientDH.Id] = 1
+	s.maskss[0][clientDH.Id] = MarshalPoint(shared)
+	for r := 1; r < MaxRounds; r++ {
+		rand := s.suite.Cipher(s.maskss[r-1][clientDH.Id])
+		rand.Read(s.maskss[r][clientDH.Id])
+	}
 	*serverPub = MarshalPoint(pub)
 	return nil
 }
 
 func (s *Server) ShareSecret(clientDH *ClientDH, serverPub *[]byte) error {
 	pub, shared := s.shareSecret(UnmarshalPoint(s.suite, clientDH.Public))
-	//s.secrets[clientDH.Id] = MarshalPoint(shared)
-	s.secrets[clientDH.Id] = make([]byte, len(MarshalPoint(shared)))
+	s.secretss[0][clientDH.Id] = MarshalPoint(shared)
+	for r := 1; r < MaxRounds; r++ {
+		rand := s.suite.Cipher(s.secretss[r-1][clientDH.Id])
+		rand.Read(s.secretss[r][clientDH.Id])
+	}
+	//s.secretss[clientDH.Id] = make([]byte, len(MarshalPoint(shared)))
 	*serverPub = MarshalPoint(pub)
 	return nil
 }
@@ -866,9 +874,9 @@ func (s *Server) GetResponse(cmask ClientMask, response *[]byte) error {
 	}
 	wg.Wait()
 	<-s.rounds[round].blocksRdy[cmask.Id]
-	r := ComputeResponse(s.rounds[round].allBlocks, cmask.Mask, s.secrets[cmask.Id])
-	rand := s.suite.Cipher(s.secrets[cmask.Id])
-	rand.Read(s.secrets[cmask.Id])
+	r := ComputeResponse(s.rounds[round].allBlocks, cmask.Mask, s.secretss[round][cmask.Id])
+	rand := s.suite.Cipher(s.secretss[round][cmask.Id])
+	rand.Read(s.secretss[round][cmask.Id])
 	Xor(Xors(otherBlocks), r)
 	*response = r
 	return nil
@@ -900,12 +908,12 @@ func (s *Server) MainLoop(_ int, _ *int) error {
 	return nil
 }
 
-func (s *Server) Masks() [][]byte {
-	return s.masks
+func (s *Server) Masks() [][][]byte {
+	return s.maskss
 }
 
-func (s *Server) Secrets() [][]byte {
-	return s.secrets
+func (s *Server) Secrets() [][][]byte {
+	return s.secretss
 }
 
 func runHandler(f func(int)) {
