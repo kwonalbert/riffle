@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/rpc"
 	"sync"
+	"time"
 
 	. "afs/lib" //types and utils
 
@@ -541,6 +542,8 @@ func main() {
 	if err != nil {
 		log.Fatal("Failed creating dest file", err)
 	}
+
+	defer TimeTrack(time.Now(), fmt.Sprintf("client %d", c.id))
 
 	var wg sync.WaitGroup
 	//for {

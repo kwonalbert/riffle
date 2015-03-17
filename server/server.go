@@ -563,7 +563,7 @@ func (s *Server) RegisterDone2(numClients int, _ *int) error {
 	for r := range s.maskss {
 		s.maskss[r] = make([][]byte, numClients)
 		s.secretss[r] = make([][]byte, numClients)
-		for i := range s.maskss {
+		for i := range s.maskss[r] {
 			s.maskss[r][i] = make([]byte, SecretSize)
 			s.secretss[r][i] = make([]byte, SecretSize)
 		}
