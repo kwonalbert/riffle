@@ -143,6 +143,21 @@ func Encrypt(g abstract.Group, msg []byte, pks []abstract.Point) ([]abstract.Poi
 	return c1s, c2s
 }
 
+func EncryptKey(g abstract.Group, msgPt abstract.Point, pks []abstract.Point) (abstract.Point, abstract.Point) {
+	k := g.Secret().Pick(random.Stream)
+	c1 := g.Point().Mul(nil, k)
+	var c2 abstract.Point = nil
+	for _, pk := range pks {
+		if c2 == nil {
+			c2 = g.Point().Mul(pk, k)
+		} else {
+			c2 = c2.Add(c2, g.Point().Mul(pk, k))
+		}
+	}
+	c2 = c2.Add(c2, msgPt)
+	return c1, c2
+}
+
 func EncryptPoint(g abstract.Group, msgPt abstract.Point, pk abstract.Point) (abstract.Point, abstract.Point) {
 	k := g.Secret().Pick(random.Stream)
 	c1 := g.Point().Mul(nil, k)

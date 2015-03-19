@@ -12,7 +12,7 @@ import (
 
 func setup(numServers int, numClients int) ([]*Server, []*Client) {
 	fmt.Println(fmt.Sprintf("Setting up for %d servers and %d clients", numServers, numClients))
-	SetTotalClients(NumClients)
+	SetTotalClients(numClients)
 
 	ss := make([]string, numServers)
 	cs := make([]string, numClients)
@@ -49,6 +49,7 @@ func setup(numServers int, numClients int) ([]*Server, []*Client) {
 			c.Register(0)
 			c.RegisterDone(0)
 			c.ShareSecret()
+			c.UploadKeys(0)
 		} (i)
 	}
 	wg.Wait()
@@ -69,6 +70,38 @@ func setup(numServers int, numClients int) ([]*Server, []*Client) {
 			}
 			compareSecrets(masks[r], cmasks[r])
 			compareSecrets(secrets[r], csecrets[r])
+		}
+	}
+
+
+	shared := make([][]bool, numClients)
+	for i := range shared {
+		shared[i] = make([]bool, numServers)
+		for j := range shared[i] {
+			shared[i][j] = false
+		}
+	}
+
+	skeyss := make([][][]byte, len(servers))
+	for i, s := range servers {
+		skeyss[i] = s.Keys()
+	}
+
+	for i, c := range clients {
+		ckeys := c.Keys()
+		for j := range ckeys {
+			//server k's key
+			if Membership(ckeys[j], skeyss[j]) == -1 {
+				log.Fatal("Key share failed!")
+			}
+			shared[i][j] = true
+		}
+	}
+	for i := range shared {
+		for j := range shared[i] {
+			if !shared[i][j] {
+				fmt.Println("Key duplicated!")
+			}
 		}
 	}
 

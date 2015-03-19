@@ -26,6 +26,10 @@ var Suite = edwards.NewAES128SHA256Ed25519(false)
 const NumClients = 5
 const NumServers = 2
 
+func TestSetup(t *testing.T) {
+	//nothing goes on here
+}
+
 func TestRounds(t *testing.T) {
 	b := 10
 

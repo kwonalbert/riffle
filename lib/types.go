@@ -21,6 +21,12 @@ type UpBlock struct {
 	Round           int
 }
 
+type UpKey struct {
+	C1s             [][]byte
+	C2s             [][]byte
+	Id              int
+}
+
 //Dissent model request
 type Request struct {
 	Hash            [][]byte
@@ -61,6 +67,22 @@ type ClientBlock struct {
 type RequestArg struct {
 	Id              int
 	Round           int
+}
+
+type InternalKey struct {
+	Xss             [][][]byte
+	Yss             [][][]byte
+	SId             int
+
+	Ybarss          [][][]byte
+	Proofs          [][]byte
+	Keys            [][]byte
+}
+
+type AuxKeyProof struct {
+	OrigXss         [][][]byte
+	OrigYss         [][][]byte
+	SId             int
 }
 
 type InternalUpload struct {

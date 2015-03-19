@@ -1,5 +1,5 @@
-//package client
-package main
+package client
+//package main
 
 import (
 	"flag"
@@ -44,6 +44,7 @@ type Client struct {
 	upLock          *sync.Mutex
 	downLock        *sync.Mutex
 
+	keys            [][]byte
 	ephKeys         []abstract.Point
 
 	//downloading
@@ -124,6 +125,7 @@ func NewClient(servers []string, myServer string) *Client {
 		upLock:         new(sync.Mutex),
 		downLock:       new(sync.Mutex),
 
+		keys:           make([][]byte, len(servers)),
 		ephKeys:        make([]abstract.Point, len(servers)),
 
 		dhashes:        make(chan []byte, MaxRounds),
@@ -153,6 +155,47 @@ func (c *Client) RegisterDone(idx int) {
 		log.Fatal("Couldn't get number of clients")
 	}
 	c.totalClients = totalClients
+}
+
+func (c *Client) UploadKeys(idx int) {
+	c1s := make([]abstract.Point, len(c.servers))
+	c2s := make([]abstract.Point, len(c.servers))
+
+	gen := c.g.Point().Base()
+	rand := c.suite.Cipher(abstract.RandomKey)
+	keyPts := make([]abstract.Point, len(c.servers))
+	for i := range keyPts {
+		secret := c.g.Secret().Pick(rand)
+		public := c.g.Point().Mul(gen, secret)
+		keyPts[i] = public
+		c.keys[i] = MarshalPoint(public)
+	}
+
+	for i := range c.servers {
+		c1s[i], c2s[i] = EncryptKey(c.g, keyPts[i], c.pks[:i+1])
+	}
+
+	//fmt.Println(c.id, "client pt", c.upRound, MarshalPoint(public))
+	upkey := UpKey {
+		C1s: make([][]byte, len(c1s)),
+		C2s: make([][]byte, len(c1s)),
+		Id: c.id,
+	}
+
+	for i := range c1s {
+		upkey.C1s[i] = MarshalPoint(c1s[i])
+		upkey.C2s[i] = MarshalPoint(c2s[i])
+	}
+
+	err := c.rpcServers[idx].Call("Server.UploadKeys", &upkey, nil)
+	if err != nil {
+		log.Fatal("Couldn't upload a key: ", err)
+	}
+
+	err = c.rpcServers[idx].Call("Server.KeyReady", c.id, nil)
+	if err != nil {
+		log.Fatal("Couldn't determine key ready", err)
+	}
 }
 
 //share one time secret with the server
@@ -495,8 +538,9 @@ func (c *Client) Masks() [][][]byte {
 func (c *Client) Secrets() [][][]byte {
 	return c.secretss
 }
-func (c *Client) RpcServers() []*rpc.Client {
-	return c.rpcServers
+
+func (c *Client) Keys() [][]byte {
+	return c.keys
 }
 
 func (c *Client) ClearHashes() {
@@ -521,6 +565,7 @@ func main() {
 	c.RegisterDone(0)
 	fmt.Println(c.id, "Sharing secret...")
 	c.ShareSecret()
+	c.UploadKeys(0)
 
 	fmt.Println("Started client", c.id)
 
