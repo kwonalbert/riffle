@@ -1,5 +1,5 @@
-package client
-//package main
+//package client
+package main
 
 import (
 	"encoding/binary"
@@ -401,7 +401,7 @@ func (c *Client) UploadBlock(block Block) {
 func (c *Client) Download() []byte {
 	c.downLock.Lock()
 	hash := <-c.dhashes
-	// if c.id == 0 {
+ 	// if c.id == 0 {
 	// 	fmt.Println(c.id, "hash", hash)
 	// }
 	block := c.DownloadBlock(hash)
@@ -445,10 +445,10 @@ func (c *Client) DownloadSlot(slot int) []byte {
 	response := make([]byte, BlockSize)
 	secretsXor := Xors(c.secretss[round])
 	cMask := ClientMask {Mask: mask, Id: c.id, Round: c.downRound}
-	call := c.rpcServers[c.myServer].Go("Server.GetResponse", cMask, &response, nil)
-	<-call.Done
-	if call.Error != nil {
-		log.Fatal("Could not get response: ", call.Error)
+	fmt.Println(c.id, c.downRound, "calling response")
+	err := c.rpcServers[c.myServer].Call("Server.GetResponse", cMask, &response)
+	if err != nil {
+		log.Fatal("Could not get response: ", err)
 	}
 
 	Xor(secretsXor, response)

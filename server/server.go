@@ -1,5 +1,5 @@
-package server
-//package main
+//package server
+package main
 
 import (
 	"encoding/binary"
@@ -86,9 +86,7 @@ type Round struct {
 	dblocksChan     chan []Block
 	blocksRdy       []chan bool
 	upHashesRdy     []chan bool
-	blocks          [](map[int][]Block) //keep track of blocks mapped to this server
 	xorsChan        []map[int](chan Block)
-	maskChan        chan []byte
 }
 
 ///////////////////////////////
@@ -219,6 +217,9 @@ func (s *Server) handleRequests(round uint64) {
 func (s *Server) handleResponses(round uint64) {
 	rnd := round % MaxRounds
 	allBlocks := <-s.rounds[rnd].dblocksChan
+	//store it on this server as well
+	s.rounds[rnd].allBlocks = allBlocks
+
 	var wg sync.WaitGroup
 	for i := 0; i < s.totalClients; i++ {
 		if s.clientMap[i] == s.id {
@@ -242,6 +243,7 @@ func (s *Server) handleResponses(round uint64) {
 					Round: round,
 				},
 			}
+			fmt.Println(s.id, round, "calling", s.clientMap[i], i)
 			err := rpcServer.Call("Server.PutClientBlock", cb, nil)
 			if err != nil {
 				log.Fatal("Couldn't put block: ", err)
@@ -249,9 +251,6 @@ func (s *Server) handleResponses(round uint64) {
 		} (i, s.rpcServers[s.clientMap[i]], rnd)
 	}
 	wg.Wait()
-
-	//store it on this server as well
-	s.rounds[rnd].allBlocks = allBlocks
 
 	for i := range s.rounds[rnd].blocksRdy {
 		if s.clientMap[i] != s.id {
@@ -605,8 +604,8 @@ func (s *Server) connectServers() {
 			} else {
 				rpcServer, err = rpc.Dial("tcp", s.servers[i])
 			}
-			rpcServers[i] = rpcServer
 		}
+		rpcServers[i] = rpcServer
 	}
 
 	var wg sync.WaitGroup
