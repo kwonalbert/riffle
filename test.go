@@ -60,7 +60,7 @@ func setup(numServers int, numClients int) ([]*Server, []*Client) {
 		masks := s.Masks()
 		secrets := s.Secrets()
 		cmasks := make([][][]byte, MaxRounds)
-		csecrets := make([][][]byte, NumClients)
+		csecrets := make([][][]byte, MaxRounds)
 		for r := range masks {
 			cmasks[r] = make([][]byte, NumClients)
 			csecrets[r] = make([][]byte, NumClients)
@@ -145,18 +145,6 @@ func request(testData [][]byte, offset int) {
 func upload() {
 	for _, c := range clients {
 		go c.Upload()
-	}
-}
-
-func uploadBlock(testData [][]byte) {
-	for i, c := range clients {
-		go func(i int, c *Client) {
-			upblock := Block {
-				Block: testData[i],
-				Round: 0,
-			}
-			c.UploadBlock(upblock)
-		} (i, c)
 	}
 }
 

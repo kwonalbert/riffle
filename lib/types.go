@@ -5,20 +5,12 @@ type File struct {
 	Hashes          map[string]int64 //maps hash to offset
 }
 
+//NOTE: could be encrypted version of the block
 type Block struct {
-	Hash            []byte
 	Block           []byte
-	Round           int
-}
+	Round           uint64
 
-//encrypted version of the block
-type UpBlock struct {
-	HC1             [][][]byte //hashes
-	HC2             [][][]byte
-	DH1             []byte //diffie-hellman ephemeral
-	DH2             []byte
-	BC              []byte //aes encrypted block
-	Round           int
+	Id              int //id is only attached in the first submit
 }
 
 type UpKey struct {
@@ -30,7 +22,7 @@ type UpKey struct {
 //Dissent model request
 type Request struct {
 	Hash            [][]byte
-	Round           int
+	Round           uint64
 }
 
 /////////////////////////////////
@@ -45,7 +37,7 @@ type ClientDH struct {
 type ClientMask struct {
 	Mask            []byte
 	Id              int
-	Round           int
+	Round           uint64
 }
 
 type ClientRegistration struct {
@@ -66,7 +58,7 @@ type ClientBlock struct {
 
 type RequestArg struct {
 	Id              int
-	Round           int
+	Round           uint64
 }
 
 type InternalKey struct {
@@ -86,25 +78,6 @@ type AuxKeyProof struct {
 }
 
 type InternalUpload struct {
-	Xsss            [][][][]byte
-	Ysss            [][][][]byte
-	DXs             [][]byte
-	DYs             [][]byte
-	BCs             [][]byte
-	Hs              [][]byte
+	Blocks          []Block
 	SId             int
-	Round           int
-
-	Ybarsss         [][][][]byte
-	Proofss         [][][]byte
-	Keys            [][]byte
-}
-
-type AuxProof struct {
-	OrigXsss        [][][][]byte
-	OrigYsss        [][][][]byte
-	OrigDXs         [][]byte
-	OrigDYs         [][]byte
-	SId             int
-	Round           int
 }

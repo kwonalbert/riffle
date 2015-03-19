@@ -2,6 +2,7 @@ package client
 //package main
 
 import (
+	"encoding/binary"
 	"flag"
 	"fmt"
 	"os"
@@ -13,6 +14,8 @@ import (
 
 	"github.com/dedis/crypto/abstract"
 	"github.com/dedis/crypto/edwards"
+
+	"golang.org/x/crypto/nacl/secretbox"
 )
 
 //assumes RPC model of communication
@@ -34,10 +37,10 @@ type Client struct {
 	g               abstract.Group
 	pks             []abstract.Point //server public keys
 
-	reqRound        int
-	reqHashRound    int
-	upRound         int
-	downRound       int
+	reqRound        uint64
+	reqHashRound    uint64
+	upRound         uint64
+	downRound       uint64
 
 	reqLock         *sync.Mutex
 	reqHashLock     *sync.Mutex
@@ -86,18 +89,6 @@ func NewClient(servers []string, myServer string) *Client {
 	}
 	wg.Wait()
 
-	maskss := make([][][]byte, MaxRounds)
-	secretss := make([][][]byte, MaxRounds)
-	for r := range maskss {
-		maskss[r] = make([][]byte, len(servers))
-		secretss[r] = make([][]byte, len(servers))
-		for i := range maskss[r] {
-			maskss[r][i] = make([]byte, SecretSize)
-			secretss[r][i] = make([]byte, SecretSize)
-		}
-	}
-
-
 	//id comes from servers
 	c := Client {
 		id:             -1,
@@ -129,8 +120,8 @@ func NewClient(servers []string, myServer string) *Client {
 		ephKeys:        make([]abstract.Point, len(servers)),
 
 		dhashes:        make(chan []byte, MaxRounds),
-		maskss:         maskss,
-		secretss:       secretss,
+		maskss:         nil,
+		secretss:       nil,
 	}
 
 	return &c
@@ -155,6 +146,17 @@ func (c *Client) RegisterDone(idx int) {
 		log.Fatal("Couldn't get number of clients")
 	}
 	c.totalClients = totalClients
+	c.maskss = make([][][]byte, MaxRounds)
+	c.secretss = make([][][]byte, MaxRounds)
+	size := (totalClients/SecretSize)*SecretSize + SecretSize
+	for r := range c.maskss {
+		c.maskss[r] = make([][]byte, len(c.servers))
+		c.secretss[r] = make([][]byte, len(c.servers))
+		for i := range c.maskss[r] {
+			c.maskss[r][i] = make([]byte, size)
+			c.secretss[r][i] = make([]byte, size)
+		}
+	}
 }
 
 func (c *Client) UploadKeys(idx int) {
@@ -245,26 +247,27 @@ func (c *Client) ShareSecret() {
 		} (i, rpcServer, cs1, cs2)
 	}
 	wg.Wait()
+
 	//fmt.Println(c.id, "masks", c.masks)
 	for r := range c.secretss {
 		for i := range c.secretss[r] {
 			if r == 0 {
-				c.secretss[r][i] = secrets[i]
+				rand = c.suite.Cipher(secrets[i])
 			} else {
-				rand := c.suite.Cipher(c.secretss[r-1][i])
-				rand.Read(c.secretss[r][i])
+				rand = c.suite.Cipher(c.secretss[r-1][i])
 			}
+			rand.Read(c.secretss[r][i])
 		}
 	}
 
 	for r := range c.maskss {
 		for i := range c.maskss[r] {
 			if r == 0 {
-				c.maskss[r][i] = masks[i]
+				rand = c.suite.Cipher(masks[i])
 			} else {
-				rand := c.suite.Cipher(c.maskss[r-1][i])
-				rand.Read(c.maskss[r][i])
+				rand = c.suite.Cipher(c.maskss[r-1][i])
 			}
+			rand.Read(c.maskss[r][i])
 		}
 	}
 
@@ -288,7 +291,7 @@ func (c *Client) RequestBlock(slot int, hash []byte) {
 	cr := ClientRequest{Request: req, Id: c.id}
 	c.dhashes <- hash
 
-	// if c.reqRound == 0 {
+	// if c.id == 0 {
 	// 	fmt.Println(c.id, c.reqRound, "requesting", hash)
 	// }
 
@@ -360,56 +363,32 @@ func (c *Client) Upload() {
 	// 	fmt.Println(c.id, "uploading", match, h.Sum(nil))
 	// }
 
-	c.UploadBlock(Block{Block: match, Round: c.upRound})
+	c.UploadBlock(Block{Block: match, Round: c.upRound, Id: c.id})
 	c.upRound++
 	c.upLock.Unlock()
 }
 
 func (c *Client) UploadBlock(block Block) {
-	hc1ss := make([][]abstract.Point, len(c.servers))
-	hc2ss := make([][]abstract.Point, len(c.servers))
+	msg := block.Block
 
-	gen := c.g.Point().Base()
-	rand := c.suite.Cipher(abstract.RandomKey)
-	secret := c.g.Secret().Pick(rand)
-	public := c.g.Point().Mul(gen, secret)
-	bs := block.Block
-
+	round := make([]byte, 24)
+	binary.PutUvarint(round, c.upRound)
+	nonce := [24]byte{}
+	copy(nonce[:], round[:])
 	for i := range c.servers {
-		h := c.suite.Hash()
-		h.Write(bs)
-		hash := h.Sum(nil)
-		idx := len(c.servers)-1-i
-		hc1ss[idx], hc2ss[idx] = Encrypt(c.g, hash, c.pks[:len(c.servers)-i])
-		key := MarshalPoint(c.g.Point().Mul(c.ephKeys[idx], secret))
-		// if c.upRound == 0 {
-		// 	fmt.Println(c.id, idx, "client key", c.upRound, key)
-		// 	fmt.Println(c.id, idx, "bs: ", bs)
-		// }
-		bs = CounterAES(key, bs)
+		idx := len(c.servers) - i - 1
+		key := [32]byte{}
+		copy(key[:], c.keys[idx][:])
+		msg = secretbox.Seal(nil, msg, &nonce, &key)
 	}
 
-	dh1, dh2 := EncryptPoint(c.g, public, c.pks[0])
-	//fmt.Println(c.id, "client pt", c.upRound, MarshalPoint(public))
-	upblock := UpBlock {
-		HC1: make([][][]byte, len(hc1ss)),
-		HC2: make([][][]byte, len(hc2ss)),
-		DH1: MarshalPoint(dh1),
-		DH2: MarshalPoint(dh2),
-		BC:  bs,
-		Round: block.Round,
-	}
+	block.Block = msg
 
-	for i := range hc1ss {
-		upblock.HC1[i] = make([][]byte, len(hc1ss[i]))
-		upblock.HC2[i] = make([][]byte, len(hc2ss[i]))
-		for j := range upblock.HC1[i] {
-			upblock.HC1[i][j] = MarshalPoint(hc1ss[i][j])
-			upblock.HC2[i][j] = MarshalPoint(hc2ss[i][j])
-		}
-	}
+	// if c.id == 0 {
+	// 	fmt.Println(c.id, "client uploaded", c.upRound)
+	// }
 
-	err := c.rpcServers[c.myServer].Call("Server.UploadBlock", &upblock, nil)
+	err := c.rpcServers[c.myServer].Call("Server.UploadBlock", &block, nil)
 	if err != nil {
 		log.Fatal("Couldn't upload a block: ", err)
 	}
@@ -422,7 +401,7 @@ func (c *Client) UploadBlock(block Block) {
 func (c *Client) Download() []byte {
 	c.downLock.Lock()
 	hash := <-c.dhashes
-	// if c.downRound == 0 {
+	// if c.id == 0 {
 	// 	fmt.Println(c.id, "hash", hash)
 	// }
 	block := c.DownloadBlock(hash)
@@ -439,7 +418,9 @@ func (c *Client) DownloadBlock(hash []byte) []byte {
 		log.Fatal("Couldn't download up hashes: ", err)
 	}
 
-	//fmt.Println(c.id, c.downRound, "down hashes", hashes)
+	// if c.id == 0 {
+	// 	fmt.Println(c.id, c.downRound, "down hashes", hashes)
+	// }
 
 	idx := Membership(hash, hashes)
 
@@ -522,7 +503,7 @@ func (c *Client) UploadPieces() {
 		fmt.Println(c.id, "unfound", hashes)
 	}
 
-	c.UploadBlock(Block{Block: match, Round: c.upRound})
+	c.UploadBlock(Block{Block: match, Round: c.upRound, Id: c.id})
 	c.upRound++
 	c.upLock.Unlock()
 }

@@ -23,7 +23,7 @@ var clients []*Client = nil
 
 var ServerAddrs []string = []string{"127.0.0.1:8000", "127.0.0.1:8001"}
 var Suite = edwards.NewAES128SHA256Ed25519(false)
-const NumClients = 5
+const NumClients = 10
 const NumServers = 2
 
 func TestSetup(t *testing.T) {
@@ -90,6 +90,9 @@ func TestRounds(t *testing.T) {
 				defer wg2.Done()
 				for i := 0; i < b; i++ {
 					res := clients[c].Download()
+					// if i == 0 {
+					// 	fmt.Println("res: ", res)
+					// }
 					if Membership(res, testData[i]) == -1 {
 						fmt.Println("Round", i)
 						fmt.Println("res: ", res)

@@ -2,6 +2,7 @@ package server
 //package main
 
 import (
+	"encoding/binary"
 	"errors"
 	"flag"
 	"fmt"
@@ -17,6 +18,8 @@ import (
 	"github.com/dedis/crypto/edwards"
 	"github.com/dedis/crypto/proof"
 	"github.com/dedis/crypto/shuffle"
+
+	"golang.org/x/crypto/nacl/secretbox"
 )
 
 var TotalClients = 0
@@ -75,7 +78,8 @@ type Round struct {
 	reqHashesRdy    []chan bool
 
 	//uploading
-	ublockChan2     chan UpBlock
+	ublockChan2     chan Block
+	shuffleChan     chan []Block
 
 	//downloading
 	upHashes        [][]byte
@@ -110,6 +114,7 @@ func NewServer(addr string, port int, id int, servers []string) *Server {
 			reqHashesRdy:   nil,
 
 			ublockChan2:    nil,
+			shuffleChan:    make(chan []Block), //collect all uploads together
 
 			upHashes:       nil,
 			dblocksChan:    make(chan []Block),
@@ -178,13 +183,15 @@ func (s *Server) runHandlers() {
 	runHandler(s.shuffleKeys, 1)
 
 	runHandler(s.handleRequests, MaxRounds)
-	//runHandler(s.gatherUploads, MaxRounds)
+	runHandler(s.gatherUploads, MaxRounds)
+	runHandler(s.shuffleUploads, MaxRounds)
 	runHandler(s.handleResponses, MaxRounds)
 
 	s.running <- true
 }
 
-func (s *Server) handleRequests(round int) {
+func (s *Server) handleRequests(round uint64) {
+	rnd := round % MaxRounds
 	allRequests := make([][][]byte, s.totalClients)
 
 	var wg sync.WaitGroup
@@ -192,25 +199,26 @@ func (s *Server) handleRequests(round int) {
 		wg.Add(1)
 		go func (i int) {
 			defer wg.Done()
-			req := <-s.rounds[round].requestsChan[i]
+			req := <-s.rounds[rnd].requestsChan[i]
 			allRequests[i] = req.Hash
 		} (i)
 	}
 	wg.Wait()
 
-	s.rounds[round].reqHashes = XorsDC(allRequests)
-	for i := range s.rounds[round].reqHashesRdy {
+	s.rounds[rnd].reqHashes = XorsDC(allRequests)
+	for i := range s.rounds[rnd].reqHashesRdy {
 		if s.clientMap[i] != s.id {
 			continue
 		}
-		go func(i int, rount int) {
-			s.rounds[round].reqHashesRdy[i] <- true
+		go func(i int, round uint64) {
+			s.rounds[rnd].reqHashesRdy[i] <- true
 		} (i, round)
 	}
 }
 
-func (s *Server) handleResponses(round int) {
-	allBlocks := <-s.rounds[round].dblocksChan
+func (s *Server) handleResponses(round uint64) {
+	rnd := round % MaxRounds
+	allBlocks := <-s.rounds[rnd].dblocksChan
 	var wg sync.WaitGroup
 	for i := 0; i < s.totalClients; i++ {
 		if s.clientMap[i] == s.id {
@@ -218,7 +226,7 @@ func (s *Server) handleResponses(round int) {
 		}
 		//if it doesnt belong to me, xor things and send it over
 		wg.Add(1)
-		go func(i int, rpcServer *rpc.Client, r int) {
+		go func(i int, rpcServer *rpc.Client, r uint64) {
 			defer wg.Done()
 			res := ComputeResponse(allBlocks, s.maskss[r][i], s.secretss[r][i])
 			rand := s.suite.Cipher(s.secretss[r][i])
@@ -238,41 +246,94 @@ func (s *Server) handleResponses(round int) {
 			if err != nil {
 				log.Fatal("Couldn't put block: ", err)
 			}
-		} (i, s.rpcServers[s.clientMap[i]], round)
+		} (i, s.rpcServers[s.clientMap[i]], rnd)
 	}
 	wg.Wait()
 
 	//store it on this server as well
-	s.rounds[round].allBlocks = allBlocks
+	s.rounds[rnd].allBlocks = allBlocks
 
-	for i := range s.rounds[round].blocksRdy {
+	for i := range s.rounds[rnd].blocksRdy {
 		if s.clientMap[i] != s.id {
 			continue
 		}
-		go func(i int, round int) {
-			s.rounds[round].blocksRdy[i] <- true
+		go func(i int, round uint64) {
+			s.rounds[rnd].blocksRdy[i] <- true
 		} (i, round)
 	}
 }
 
-// func (s *Server) shuffleUploads(round int) {
-// 	var aesWG sync.WaitGroup
-// 	for j := 0; j < s.totalClients; j++ {
-// 		aesWG.Add(1)
-// 		go func(j int) {
-// 			defer aesWG.Done()
-// 			ephKey := Decrypt(s.g, DXs[pi[j]], DYs[pi[j]], s.sk)
-// 			key := MarshalPoint(s.g.Point().Mul(ephKey, s.ephSecret))
-// 				//shuffle using pi
-// 			decBlocks[j] = CounterAES(key, uploads.BCs[pi[j]])
-// 			ephKeys[j] = ephKey
-// 		} (j)
-// 	}
-// 	aesWG.Wait()
+func (s *Server) gatherUploads(round uint64) {
+	rnd := round % MaxRounds
+	allBlocks := make([]Block, s.totalClients)
+	for i := 0; i < s.totalClients; i++ {
+		block := <-s.rounds[rnd].ublockChan2
+		allBlocks[block.Id] = Block{Block: block.Block, Round: block.Round}
+	}
 
-// }
+	s.rounds[rnd].shuffleChan <- allBlocks
+}
 
-func (s *Server) gatherKeys(_ int) {
+func (s *Server) shuffleUploads(round uint64) {
+	rnd := round % MaxRounds
+	allBlocks := <-s.rounds[rnd].shuffleChan
+
+	//construct permuted blocks
+	uploads := make([]Block, s.totalClients)
+
+	for i := range uploads {
+		uploads[i] = Block{Block: allBlocks[s.pi[i]].Block, Round: round}
+	}
+
+	tmp := make([]byte, 24)
+	binary.PutUvarint(tmp, round)
+	nonce := [24]byte{}
+	copy(nonce[:], tmp[:])
+
+	var aesWG sync.WaitGroup
+	for i := 0; i < s.totalClients; i++ {
+		aesWG.Add(1)
+		go func(i int) {
+			defer aesWG.Done()
+			key := [32]byte{}
+			copy(key[:], s.keys[i][:])
+			var good bool
+			uploads[i].Block, good = secretbox.Open(nil, uploads[i].Block, &nonce, &key)
+			if !good {
+				log.Fatal(round, "Check failed:", s.id, i)
+			}
+		} (i)
+	}
+	aesWG.Wait()
+
+	if s.id == len(s.servers) - 1 {
+		if len(uploads[0].Block) != BlockSize {
+			log.Fatal("wrong message size...")
+		}
+	}
+
+	if s.id == len(s.servers) - 1 {
+		var wg sync.WaitGroup
+		for _, rpcServer := range s.rpcServers {
+			wg.Add(1)
+			go func(rpcServer *rpc.Client) {
+				defer wg.Done()
+				err := rpcServer.Call("Server.PutPlainBlocks", &uploads, nil)
+				if err != nil {
+					log.Fatal("Failed uploading shuffled and decoded blocks: ", err)
+				}
+			} (rpcServer)
+		}
+		wg.Wait()
+	} else {
+		err := s.rpcServers[s.id+1].Call("Server.ShareServerBlocks", &uploads, nil)
+		if err != nil {
+			log.Fatal("Couldn't hand off the blocks to next server", s.id+1, err)
+		}
+	}
+}
+
+func (s *Server) gatherKeys(_ uint64) {
 	allKeys := make([]UpKey, s.totalClients)
 	for i := 0; i < s.totalClients; i++ {
 		key := <-s.keyUploadChan
@@ -322,7 +383,7 @@ func (s *Server) gatherKeys(_ int) {
 	s.keyShuffleChan <- ik
 }
 
-func (s *Server) shuffleKeys(_ int) {
+func (s *Server) shuffleKeys(_ uint64) {
 	keys := <-s.keyShuffleChan
 
 	//fmt.Println(s.id, "shuffle start: ", round)
@@ -524,7 +585,7 @@ func (s *Server) RegisterDone2(numClients int, _ *int) error {
 			s.rounds[r].reqHashesRdy[i] = make(chan bool)
 		}
 
-		s.rounds[r].ublockChan2 = make(chan UpBlock, numClients-1)
+		s.rounds[r].ublockChan2 = make(chan Block, numClients-1)
 	}
 	s.regDone <- true
 	fmt.Println(s.id, "Register done")
@@ -603,9 +664,14 @@ func (s *Server) shareSecret(clientPublic abstract.Point) (abstract.Point, abstr
 
 func (s *Server) ShareMask(clientDH *ClientDH, serverPub *[]byte) error {
 	pub, shared := s.shareSecret(UnmarshalPoint(s.suite, clientDH.Public))
-	s.maskss[0][clientDH.Id] = MarshalPoint(shared)
-	for r := 1; r < MaxRounds; r++ {
-		rand := s.suite.Cipher(s.maskss[r-1][clientDH.Id])
+	mask := MarshalPoint(shared)
+	var rand abstract.Cipher
+	for r := 0; r < MaxRounds; r++ {
+		if r == 0 {
+			rand = s.suite.Cipher(mask)
+		} else {
+			rand = s.suite.Cipher(s.maskss[r-1][clientDH.Id])
+		}
 		rand.Read(s.maskss[r][clientDH.Id])
 	}
 	*serverPub = MarshalPoint(pub)
@@ -614,9 +680,14 @@ func (s *Server) ShareMask(clientDH *ClientDH, serverPub *[]byte) error {
 
 func (s *Server) ShareSecret(clientDH *ClientDH, serverPub *[]byte) error {
 	pub, shared := s.shareSecret(UnmarshalPoint(s.suite, clientDH.Public))
-	s.secretss[0][clientDH.Id] = MarshalPoint(shared)
-	for r := 1; r < MaxRounds; r++ {
-		rand := s.suite.Cipher(s.secretss[r-1][clientDH.Id])
+	secret := MarshalPoint(shared)
+	var rand abstract.Cipher
+	for r := 0; r < MaxRounds; r++ {
+		if r == 0 {
+			rand = s.suite.Cipher(secret)
+		} else {
+			rand = s.suite.Cipher(s.secretss[r-1][clientDH.Id])
+		}
 		rand.Read(s.secretss[r][clientDH.Id])
 	}
 	//s.secretss[clientDH.Id] = make([]byte, len(MarshalPoint(shared)))
@@ -627,6 +698,46 @@ func (s *Server) ShareSecret(clientDH *ClientDH, serverPub *[]byte) error {
 func (s *Server) GetEphKey(_ int, serverPub *[]byte) error {
 	pub := s.g.Point().Mul(s.g.Point().Base(), s.ephSecret)
 	*serverPub = MarshalPoint(pub)
+	return nil
+}
+
+func (s *Server) PutAuxProof(aux *AuxKeyProof, _ *int) error {
+	s.auxProofChan[aux.SId] <- *aux
+	return nil
+}
+
+func (s *Server) ShareServerKeys(ik *InternalKey, correct *bool) error {
+	aux := <-s.auxProofChan[ik.SId]
+	//fmt.Println(s.id, "aux")
+	good := s.verifyShuffle(*ik, aux)
+
+	if ik.SId != len(s.servers) - 1 {
+		aux = AuxKeyProof {
+			OrigXss: ik.Xss[1:],
+			OrigYss: ik.Yss[1:],
+			SId:     ik.SId + 1,
+		}
+		s.auxProofChan[aux.SId] <- aux
+	}
+
+	if ik.SId == len(s.servers) - 1 && s.id == 0 {
+		for i := 0; i < s.totalClients; i++ {
+			go func () {
+				s.keysRdy <- true
+			} ()
+		}
+	} else if ik.SId == s.id - 1 {
+		ik.Ybarss = nil
+		ik.Proofs = nil
+		ik.Keys = nil
+		s.keyShuffleChan <- *ik
+	}
+	*correct = good
+	return nil
+}
+
+func (s *Server) KeyReady(id int, _ *int) error {
+	<-s.keysRdy
 	return nil
 }
 
@@ -665,7 +776,7 @@ func (s *Server) GetReqHashes(args *RequestArg, hashes *[][]byte) error {
 /////////////////////////////////
 //Upload
 ////////////////////////////////
-func (s *Server) UploadBlock(block *UpBlock, _ *int) error {
+func (s *Server) UploadBlock(block *Block, _ *int) error {
 	err := s.rpcServers[0].Call("Server.UploadBlock2", block, nil)
 	if err != nil {
 		log.Fatal("Couldn't send block to first server: ", err)
@@ -673,79 +784,40 @@ func (s *Server) UploadBlock(block *UpBlock, _ *int) error {
 	return nil
 }
 
-func (s *Server) UploadBlock2(block *UpBlock, _*int) error {
+func (s *Server) UploadBlock2(block *Block, _*int) error {
 	round := block.Round % MaxRounds
 	s.rounds[round].ublockChan2 <- *block
 	//fmt.Println("put ublockchan2", round)
 	return nil
 }
 
-func (s *Server) PutAuxProof(aux *AuxKeyProof, _ *int) error {
-	s.auxProofChan[aux.SId] <- *aux
+func (s *Server) PutPlainBlocks(bs *[]Block, _ *int) error {
+	blocks := *bs
+	round := blocks[0].Round % MaxRounds
+
+	for i := range blocks {
+		h := s.suite.Hash()
+		h.Write(blocks[i].Block)
+		s.rounds[round].upHashes[i] = h.Sum(nil)
+	}
+
+	for i := range s.rounds[round].upHashesRdy {
+		if s.clientMap[i] != s.id {
+			continue
+		}
+		go func(i int, round uint64) {
+			s.rounds[round].upHashesRdy[i] <- true
+		} (i, round)
+	}
+
+	s.rounds[round].dblocksChan <- blocks
+
 	return nil
 }
 
-func (s *Server) verifyShuffle(ik InternalKey, aux AuxKeyProof) bool {
-	Xss := aux.OrigXss
-	Yss := aux.OrigYss
-	Xbarss := ik.Xss
-	Ybarss := ik.Ybarss
-	prfss := ik.Proofs
-
-	for i := range Xss {
-		pk := UnmarshalPoint(s.suite, ik.Keys[i])
-		Xs := make([]abstract.Point, len(Xss[i]))
-		Ys := make([]abstract.Point, len(Yss[i]))
-		Xbars := make([]abstract.Point, len(Xbarss[i]))
-		Ybars := make([]abstract.Point, len(Ybarss[i]))
-		for j := range Xss[i] {
-			Xs[j] = UnmarshalPoint(s.suite, Xss[i][j])
-			Ys[j] = UnmarshalPoint(s.suite, Yss[i][j])
-			Xbars[j] = UnmarshalPoint(s.suite, Xbarss[i][j])
-			Ybars[j] = UnmarshalPoint(s.suite, Ybarss[i][j])
-		}
-		v := shuffle.Verifier(s.suite, nil, pk, Xs, Ys, Xbars, Ybars)
-		err := proof.HashVerify(s.suite, "PairShuffle", v, prfss[i])
-		if err != nil {
-			log.Println("Shuffle verify failed: ", err)
-			return false
-		}
-	}
-	return true
-}
-
-func (s *Server) ShareServerKeys(ik *InternalKey, correct *bool) error {
-	aux := <-s.auxProofChan[ik.SId]
-	//fmt.Println(s.id, "aux")
-	good := s.verifyShuffle(*ik, aux)
-
-	if ik.SId != len(s.servers) - 1 {
-		aux = AuxKeyProof {
-			OrigXss: ik.Xss[1:],
-			OrigYss: ik.Yss[1:],
-			SId:     ik.SId + 1,
-		}
-		s.auxProofChan[aux.SId] <- aux
-	}
-
-	if ik.SId == len(s.servers) - 1 && s.id == 0 {
-		for i := 0; i < s.totalClients; i++ {
-			go func () {
-				s.keysRdy <- true
-			} ()
-		}
-	} else if ik.SId == s.id - 1 {
-		ik.Ybarss = nil
-		ik.Proofs = nil
-		ik.Keys = nil
-		s.keyShuffleChan <- *ik
-	}
-	*correct = good
-	return nil
-}
-
-func (s *Server) KeyReady(id int, _ *int) error {
-	<-s.keysRdy
+func (s *Server) ShareServerBlocks(blocks *[]Block, _ *int) error {
+	round := (*blocks)[0].Round % MaxRounds
+	s.rounds[round].shuffleChan <- *blocks
 	return nil
 }
 
@@ -813,6 +885,36 @@ func (s *Server) MainLoop(_ int, _ *int) error {
 	return nil
 }
 
+
+func (s *Server) verifyShuffle(ik InternalKey, aux AuxKeyProof) bool {
+	Xss := aux.OrigXss
+	Yss := aux.OrigYss
+	Xbarss := ik.Xss
+	Ybarss := ik.Ybarss
+	prfss := ik.Proofs
+
+	for i := range Xss {
+		pk := UnmarshalPoint(s.suite, ik.Keys[i])
+		Xs := make([]abstract.Point, len(Xss[i]))
+		Ys := make([]abstract.Point, len(Yss[i]))
+		Xbars := make([]abstract.Point, len(Xbarss[i]))
+		Ybars := make([]abstract.Point, len(Ybarss[i]))
+		for j := range Xss[i] {
+			Xs[j] = UnmarshalPoint(s.suite, Xss[i][j])
+			Ys[j] = UnmarshalPoint(s.suite, Yss[i][j])
+			Xbars[j] = UnmarshalPoint(s.suite, Xbarss[i][j])
+			Ybars[j] = UnmarshalPoint(s.suite, Ybarss[i][j])
+		}
+		v := shuffle.Verifier(s.suite, nil, pk, Xs, Ys, Xbars, Ybars)
+		err := proof.HashVerify(s.suite, "PairShuffle", v, prfss[i])
+		if err != nil {
+			log.Println("Shuffle verify failed: ", err)
+			return false
+		}
+	}
+	return true
+}
+
 func (s *Server) Masks() [][][]byte {
 	return s.maskss
 }
@@ -825,11 +927,13 @@ func (s *Server) Keys() [][]byte {
 	return s.keys
 }
 
-func runHandler(f func(int), rounds int) {
-	for r := 0; r < rounds; r++ {
-		go func (r int) {
+func runHandler(f func(uint64), rounds uint64) {
+	var r uint64 = 0
+	for ; r < rounds; r++ {
+		go func (r uint64) {
 			for {
 				f(r)
+				r += rounds
 			}
 		} (r)
 	}

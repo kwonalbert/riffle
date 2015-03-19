@@ -5,9 +5,6 @@ import (
 	"bytes"
 	"errors"
 	//"fmt"
-	goCipher "crypto/cipher"
-	"crypto/aes"
-	"encoding/binary"
 	"io/ioutil"
 	"log"
 	"sync"
@@ -168,23 +165,6 @@ func EncryptPoint(g abstract.Group, msgPt abstract.Point, pk abstract.Point) (ab
 
 func Decrypt(g abstract.Group, c1 abstract.Point, c2 abstract.Point, sk abstract.Secret) abstract.Point {
 	return g.Point().Sub(c2, g.Point().Mul(c1, sk))
-}
-
-func CounterAES(key []byte, block []byte) []byte {
-	aesCipher, err := aes.NewCipher(key)
-	if err != nil {
-		log.Fatal("Could not create encryptor")
-	}
-
-	ciphertext := make([]byte, len(block))
-	var counter uint64 = 0
-	iv := make([]byte, aes.BlockSize)
-	binary.PutUvarint(iv, counter)
-
-	stream := goCipher.NewCTR(aesCipher, iv)
-	stream.XORKeyStream(ciphertext, block)
-
-	return ciphertext
 }
 
 func Membership(res []byte, set [][]byte) int {
