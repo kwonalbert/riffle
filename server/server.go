@@ -80,7 +80,7 @@ type Round struct {
 	reqHashesRdy    []chan bool
 
 	//uploading
-	ublockChan2     chan Block
+	ublockChan2     []chan Block
 	shuffleChan     chan []Block
 
 	//downloading
@@ -245,7 +245,6 @@ func (s *Server) handleResponses(round uint64) {
 					Round: round,
 				},
 			}
-			fmt.Println(s.id, round, "calling", s.clientMap[i], i)
 			err := rpcServer.Call("Server.PutClientBlock", cb, nil)
 			if err != nil {
 				log.Fatal("Couldn't put block: ", err)
@@ -267,10 +266,17 @@ func (s *Server) handleResponses(round uint64) {
 func (s *Server) gatherUploads(round uint64) {
 	rnd := round % MaxRounds
 	allBlocks := make([]Block, s.totalClients)
+	var wg sync.WaitGroup
 	for i := 0; i < s.totalClients; i++ {
-		block := <-s.rounds[rnd].ublockChan2
-		allBlocks[block.Id] = Block{Block: block.Block, Round: block.Round}
+		wg.Add(1)
+		go func (i int) {
+			defer wg.Done()
+			block := <-s.rounds[rnd].ublockChan2[i]
+			block.Id = 0
+			allBlocks[i] = block
+		} (i)
 	}
+	wg.Wait()
 
 	s.rounds[rnd].shuffleChan <- allBlocks
 }
@@ -283,7 +289,7 @@ func (s *Server) shuffleUploads(round uint64) {
 	uploads := make([]Block, s.totalClients)
 
 	for i := range uploads {
-		uploads[i] = Block{Block: allBlocks[s.pi[i]].Block, Round: round}
+		uploads[i] = Block{Block: allBlocks[s.pi[i]].Block, Round: round, Id: 0}
 	}
 
 	tmp := make([]byte, 24)
@@ -301,6 +307,7 @@ func (s *Server) shuffleUploads(round uint64) {
 			var good bool
 			uploads[i].Block, good = secretbox.Open(nil, uploads[i].Block, &nonce, &key)
 			if !good {
+				fmt.Println("client", s.pi[i], allBlocks[s.pi[i]])
 				log.Fatal(round, "Check failed:", s.id, i)
 			}
 		} (i)
@@ -562,7 +569,6 @@ func (s *Server) RegisterDone2(numClients int, _ *int) error {
 	s.keyUploadChan = make(chan UpKey, numClients)
 
 	for r := range s.rounds {
-
 		for i := 0; i < len(s.servers); i++ {
 			s.rounds[r].xorsChan[i] = make(map[int](chan Block))
 			for j := 0; j < numClients; j++ {
@@ -580,13 +586,13 @@ func (s *Server) RegisterDone2(numClients int, _ *int) error {
 		s.rounds[r].blocksRdy = make([]chan bool, numClients)
 		s.rounds[r].upHashesRdy = make([]chan bool, numClients)
 		s.rounds[r].reqHashesRdy = make([]chan bool, numClients)
+		s.rounds[r].ublockChan2 = make([]chan Block, numClients)
 		for i := range s.rounds[r].blocksRdy {
 			s.rounds[r].blocksRdy[i] = make(chan bool)
 			s.rounds[r].upHashesRdy[i] = make(chan bool)
 			s.rounds[r].reqHashesRdy[i] = make(chan bool)
+			s.rounds[r].ublockChan2[i] = make(chan Block)
 		}
-
-		s.rounds[r].ublockChan2 = make(chan Block, numClients-1)
 	}
 	s.regDone <- true
 	fmt.Println(s.id, "Register done")
@@ -787,7 +793,7 @@ func (s *Server) UploadBlock(block *Block, _ *int) error {
 
 func (s *Server) UploadBlock2(block *Block, _*int) error {
 	round := block.Round % MaxRounds
-	s.rounds[round].ublockChan2 <- *block
+	s.rounds[round].ublockChan2[block.Id] <- *block
 	//fmt.Println("put ublockchan2", round)
 	return nil
 }

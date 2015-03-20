@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/rpc"
 	"sync"
+	"time"
 
 	. "afs/lib" //types and utils
 
@@ -160,6 +161,9 @@ func (c *Client) RegisterDone(idx int) {
 }
 
 func (c *Client) UploadKeys(idx int) {
+	if c.id == 0 {
+		defer TimeTrack(time.Now(), "sharing keys")
+	}
 	c1s := make([]abstract.Point, len(c.servers))
 	c2s := make([]abstract.Point, len(c.servers))
 
@@ -201,7 +205,6 @@ func (c *Client) UploadKeys(idx int) {
 }
 
 //share one time secret with the server
-//TODO: need to share longer secret for more than 256 clients
 func (c *Client) ShareSecret() {
 	gen := c.g.Point().Base()
 	rand := c.suite.Cipher(abstract.RandomKey)
@@ -349,8 +352,8 @@ func (c *Client) Upload() {
 		}
 	}
 
+	match = make([]byte, BlockSize)
 	if offset != -1 {
-		match = make([]byte, BlockSize)
 		f := c.osFiles[name]
 		_, err := f.ReadAt(match, offset)
 		if err != nil {
@@ -381,7 +384,6 @@ func (c *Client) UploadBlock(block Block) {
 		copy(key[:], c.keys[idx][:])
 		msg = secretbox.Seal(nil, msg, &nonce, &key)
 	}
-
 	block.Block = msg
 
 	// if c.id == 0 {
@@ -425,8 +427,7 @@ func (c *Client) DownloadBlock(hash []byte) []byte {
 	idx := Membership(hash, hashes)
 
 	if idx == -1 {
-		//TODO: handle unfound hash..
-		return make([]byte, 0)
+		return c.DownloadSlot(0)
 	} else {
 		return c.DownloadSlot(idx)
 	}
@@ -445,7 +446,6 @@ func (c *Client) DownloadSlot(slot int) []byte {
 	response := make([]byte, BlockSize)
 	secretsXor := Xors(c.secretss[round])
 	cMask := ClientMask {Mask: mask, Id: c.id, Round: c.downRound}
-	fmt.Println(c.id, c.downRound, "calling response")
 	err := c.rpcServers[c.myServer].Call("Server.GetResponse", cMask, &response)
 	if err != nil {
 		log.Fatal("Could not get response: ", err)
@@ -567,6 +567,9 @@ func main() {
 	// if err != nil {
 	// 	log.Fatal("Failed creating dest file", err)
 	// }
+	if c.id == 0 {
+		defer TimeTrack(time.Now(), fmt.Sprintf("sharing %d chunks", len(wanted)))
+	}
 
 	var wg sync.WaitGroup
 	//for {
@@ -597,10 +600,16 @@ func main() {
 				h.Write(res)
 				hash := h.Sum(nil)
 				_ = wanted[string(hash)]
+<<<<<<< HEAD
 				//nf.WriteAt(res, offset)
 				if c.id == 0 {
 					fmt.Println(c.id, "Downloaded", c.downRound)
 				}
+=======
+				//fmt.Println(c.id, c.downRound, "offset", offset)
+				//nf.WriteAt(res, offset)
+				fmt.Println(c.id, "Downloaded", c.downRound)
+>>>>>>> b46d4bcd28e71946ed79c99c6ba49f1196c65c33
 			}
 		}()
 
