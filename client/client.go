@@ -600,16 +600,10 @@ func main() {
 				h.Write(res)
 				hash := h.Sum(nil)
 				_ = wanted[string(hash)]
-<<<<<<< HEAD
 				//nf.WriteAt(res, offset)
 				if c.id == 0 {
 					fmt.Println(c.id, "Downloaded", c.downRound)
 				}
-=======
-				//fmt.Println(c.id, c.downRound, "offset", offset)
-				//nf.WriteAt(res, offset)
-				fmt.Println(c.id, "Downloaded", c.downRound)
->>>>>>> b46d4bcd28e71946ed79c99c6ba49f1196c65c33
 			}
 		}()
 
