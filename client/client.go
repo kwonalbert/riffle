@@ -562,11 +562,11 @@ func main() {
 		log.Fatal("Failed reading the torrent file", err)
 	}
 
-	newFile := fmt.Sprintf("%s.file", *wf)
-	nf, err := os.Create(newFile)
-	if err != nil {
-		log.Fatal("Failed creating dest file", err)
-	}
+	// newFile := fmt.Sprintf("%s.file", *wf)
+	// nf, err := os.Create(newFile)
+	// if err != nil {
+	// 	log.Fatal("Failed creating dest file", err)
+	// }
 
 	var wg sync.WaitGroup
 	//for {
@@ -596,10 +596,11 @@ func main() {
 				h := c.suite.Hash()
 				h.Write(res)
 				hash := h.Sum(nil)
-				offset := wanted[string(hash)]
-				fmt.Println(c.id, c.downRound, "offset", offset)
-				nf.WriteAt(res, offset)
-				//fmt.Println(c.id, "Downloaded", c.downRound)
+				_ = wanted[string(hash)]
+				//nf.WriteAt(res, offset)
+				if c.id == 0 {
+					fmt.Println(c.id, "Downloaded", c.downRound)
+				}
 			}
 		}()
 

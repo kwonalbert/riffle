@@ -9,7 +9,9 @@ import (
 	"log"
 	"net"
 	"net/rpc"
+	"os"
 	"runtime"
+	"runtime/pprof"
 	"sync"
 
 	. "afs/lib" //types and utils
@@ -947,11 +949,20 @@ func SetTotalClients(n int) {
 /////////////////////////////////
 func main() {
 	runtime.GOMAXPROCS(runtime.NumCPU())
-
+	var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
 	var id *int = flag.Int("i", 0, "id [num]")
 	var servers *string = flag.String("s", "", "servers [file]")
 	var numClients *int = flag.Int("n", 0, "num clients [num]")
 	flag.Parse()
+
+	if *id == 0 && *cpuprofile != "" {
+		f, err := os.Create(*cpuprofile)
+		if err != nil {
+			log.Fatal(err)
+		}
+		pprof.StartCPUProfile(f)
+		defer pprof.StopCPUProfile()
+	}
 
 	ss := ParseServerList(*servers)
 
