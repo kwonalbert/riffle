@@ -1,5 +1,5 @@
-//package server
-package main
+package server
+//package main
 
 import (
 	"encoding/binary"
@@ -549,14 +549,15 @@ func (s *Server) registerDone() {
 func (s *Server) RegisterDone2(numClients int, _ *int) error {
 	s.totalClients = numClients
 
+	size := (numClients/SecretSize)*SecretSize + SecretSize
 	s.maskss = make([][][]byte, MaxRounds)
 	s.secretss = make([][][]byte, MaxRounds)
 	for r := range s.maskss {
 		s.maskss[r] = make([][]byte, numClients)
 		s.secretss[r] = make([][]byte, numClients)
 		for i := range s.maskss[r] {
-			s.maskss[r][i] = make([]byte, SecretSize)
-			s.secretss[r][i] = make([]byte, SecretSize)
+			s.maskss[r][i] = make([]byte, size)
+			s.secretss[r][i] = make([]byte, BlockSize)
 		}
 	}
 
@@ -861,7 +862,10 @@ func (s *Server) GetResponse(cmask ClientMask, response *[]byte) error {
 	r := ComputeResponse(s.rounds[round].allBlocks, cmask.Mask, s.secretss[round][cmask.Id])
 	rand := s.suite.Cipher(s.secretss[round][cmask.Id])
 	rand.Read(s.secretss[round][cmask.Id])
-	Xor(Xors(otherBlocks), r)
+
+	ob := make([]byte, BlockSize)
+	Xors(ob, otherBlocks)
+	XorWords(r, ob, r)
 	*response = r
 	return nil
 }

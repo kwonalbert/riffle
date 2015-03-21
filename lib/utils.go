@@ -25,39 +25,6 @@ func SetBit(n_int int, b bool, bs []byte) {
 	}
 }
 
-func Xor(r []byte, w []byte) {
-	for j := 0; j < len(w)/len(r); j+=len(r) {
-		for i, b := range r {
-			w[i] ^= b
-		}
-	}
-}
-
-func Xors(bss [][]byte) []byte {
-	n := len(bss[0])
-	x := make([]byte, n)
-	for _, bs := range bss {
-		for i, b := range bs {
-			x[i] ^= b
-		}
-	}
-	return x
-}
-
-func XorsDC(bsss [][][]byte) [][]byte {
-	n := len(bsss)
-	m := len(bsss[0])
-	x := make([][]byte, n)
-	for i, _ := range bsss {
-		y := make([][]byte, m)
-		for j := 0; j < m; j++ {
-			y[j] = bsss[j][i]
-		}
-		x[i] = Xors(y)
-	}
-	return x
-}
-
 func AllZero(xs []byte) bool {
 	for _, x := range xs {
 		if x != 0 {
@@ -74,7 +41,7 @@ L:
         for _, b := range mask {
                 for j := 0; j < 8; j++ {
                         if b&1 == 1 {
-                                Xor(allBlocks[i].Block, response)
+                                XorWords(response, allBlocks[i].Block, response)
                         }
                         b >>= 1
                         i++
@@ -83,7 +50,7 @@ L:
                         }
                 }
         }
-	Xor(secret, response)
+	XorWords(response, secret, response)
         return response
 }
 

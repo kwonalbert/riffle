@@ -114,9 +114,9 @@ func compareSecrets(secerets1 [][]byte, secerets2 [][]byte) {
 	for i := range secerets1 {
 		for j := range secerets1[i] {
 			if secerets1[i][j] != secerets2[i][j] {
-				fmt.Println(secerets1)
-				fmt.Println(secerets2)
-				log.Fatal("Sharing secrets didn't work!")
+				fmt.Println(secerets1[i])
+				fmt.Println(secerets2[i])
+				log.Fatal("Sharing secrets didn't work!", i, j)
 			}
 		}
 	}

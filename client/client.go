@@ -1,5 +1,5 @@
-//package client
-package main
+package client
+//package main
 
 import (
 	"encoding/binary"
@@ -147,15 +147,16 @@ func (c *Client) RegisterDone(idx int) {
 		log.Fatal("Couldn't get number of clients")
 	}
 	c.totalClients = totalClients
+
+	size := (totalClients/SecretSize)*SecretSize + SecretSize
 	c.maskss = make([][][]byte, MaxRounds)
 	c.secretss = make([][][]byte, MaxRounds)
-	size := (totalClients/SecretSize)*SecretSize + SecretSize
 	for r := range c.maskss {
 		c.maskss[r] = make([][]byte, len(c.servers))
 		c.secretss[r] = make([][]byte, len(c.servers))
 		for i := range c.maskss[r] {
 			c.maskss[r][i] = make([]byte, size)
-			c.secretss[r][i] = make([]byte, size)
+			c.secretss[r][i] = make([]byte, BlockSize)
 		}
 	}
 }
@@ -360,11 +361,6 @@ func (c *Client) Upload() {
 			log.Fatal("Failed reading file", name, ":", err)
 		}
 	}
-	// h := c.suite.Hash()
-	// h.Write(match)
-	// if c.upRound == 0 {
-	// 	fmt.Println(c.id, "uploading", match, h.Sum(nil))
-	// }
 
 	c.UploadBlock(Block{Block: match, Round: c.upRound, Id: c.id})
 	c.upRound++
@@ -385,10 +381,6 @@ func (c *Client) UploadBlock(block Block) {
 		msg = secretbox.Seal(nil, msg, &nonce, &key)
 	}
 	block.Block = msg
-
-	// if c.id == 0 {
-	// 	fmt.Println(c.id, "client uploaded", c.upRound)
-	// }
 
 	err := c.rpcServers[c.myServer].Call("Server.UploadBlock", &block, nil)
 	if err != nil {
@@ -436,22 +428,25 @@ func (c *Client) DownloadBlock(hash []byte) []byte {
 func (c *Client) DownloadSlot(slot int) []byte {
 	//all but one server uses the prng technique
 	round := c.downRound % MaxRounds
+	maskSize := len(c.maskss[round][0])
 	finalMask := make([]byte, SecretSize)
 	SetBit(slot, true, finalMask)
-	mask := Xors(c.maskss[round])
-	Xor(c.maskss[round][c.myServer], mask)
-	Xor(finalMask, mask)
+	mask := make([]byte, maskSize)
+	Xors(mask, c.maskss[round])
+	XorWords(mask, c.maskss[round][c.myServer], mask)
+	XorWords(finalMask, finalMask, mask)
 
 	//one response includes all the secrets
 	response := make([]byte, BlockSize)
-	secretsXor := Xors(c.secretss[round])
+	secretsXor := make([]byte, BlockSize)
+	Xors(secretsXor, c.secretss[round])
 	cMask := ClientMask {Mask: mask, Id: c.id, Round: c.downRound}
 	err := c.rpcServers[c.myServer].Call("Server.GetResponse", cMask, &response)
 	if err != nil {
 		log.Fatal("Could not get response: ", err)
 	}
 
-	Xor(secretsXor, response)
+	XorWords(response, secretsXor, response)
 
 	for i := range c.secretss[round] {
 		rand := c.suite.Cipher(c.secretss[round][i])
