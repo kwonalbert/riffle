@@ -1,5 +1,5 @@
-package server
-//package main
+//package server
+package main
 
 import (
 	"encoding/binary"

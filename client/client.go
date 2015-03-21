@@ -1,5 +1,5 @@
-package client
-//package main
+//package client
+package main
 
 import (
 	"encoding/binary"

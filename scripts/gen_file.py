@@ -18,7 +18,7 @@ for i in range(num_clients):
     t = open("%s/%s" % (dst_dir, (file_name % i) + '.torrent'), 'w')
     for j in range(num_chunks):
         r = os.urandom(block_size)
-        h = hashlib.sha224(bytearray(r)).digest()
+        h = hashlib.sha256(bytearray(r)).digest()
         f.write(r)
         t.write(h)
 
