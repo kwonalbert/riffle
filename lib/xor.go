@@ -83,11 +83,17 @@ func XorWords(dst, a, b []byte) {
 	}
 }
 
+func Xor(a, dst []byte) {
+	XorWords(dst, a, dst)
+}
+
 //make sure dst is all 0's when you call this
-func Xors(dst []byte, as [][]byte) {
+func Xors(as [][]byte) []byte{
+	dst := make([]byte, len(as[0]))
 	for i := range as {
 		XorWords(dst, dst, as[i])
 	}
+	return dst
 }
 
 func XorsDC(bsss [][][]byte) [][]byte {
@@ -100,7 +106,7 @@ func XorsDC(bsss [][][]byte) [][]byte {
 		for j := 0; j < m; j++ {
 			y[j] = bsss[j][i]
 		}
-		Xors(x[i], y)
+		x[i] = Xors(y)
 	}
 	return x
 }

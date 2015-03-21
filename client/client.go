@@ -429,24 +429,22 @@ func (c *Client) DownloadSlot(slot int) []byte {
 	//all but one server uses the prng technique
 	round := c.downRound % MaxRounds
 	maskSize := len(c.maskss[round][0])
-	finalMask := make([]byte, SecretSize)
+	finalMask := make([]byte, maskSize)
 	SetBit(slot, true, finalMask)
-	mask := make([]byte, maskSize)
-	Xors(mask, c.maskss[round])
-	XorWords(mask, c.maskss[round][c.myServer], mask)
-	XorWords(finalMask, finalMask, mask)
+	mask := Xors(c.maskss[round])
+	Xor(c.maskss[round][c.myServer], mask)
+	Xor(finalMask, mask)
 
 	//one response includes all the secrets
 	response := make([]byte, BlockSize)
-	secretsXor := make([]byte, BlockSize)
-	Xors(secretsXor, c.secretss[round])
+	secretsXor := Xors(c.secretss[round])
 	cMask := ClientMask {Mask: mask, Id: c.id, Round: c.downRound}
 	err := c.rpcServers[c.myServer].Call("Server.GetResponse", cMask, &response)
 	if err != nil {
 		log.Fatal("Could not get response: ", err)
 	}
 
-	XorWords(response, secretsXor, response)
+	Xor(secretsXor, response)
 
 	for i := range c.secretss[round] {
 		rand := c.suite.Cipher(c.secretss[round][i])

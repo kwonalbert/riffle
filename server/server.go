@@ -862,10 +862,7 @@ func (s *Server) GetResponse(cmask ClientMask, response *[]byte) error {
 	r := ComputeResponse(s.rounds[round].allBlocks, cmask.Mask, s.secretss[round][cmask.Id])
 	rand := s.suite.Cipher(s.secretss[round][cmask.Id])
 	rand.Read(s.secretss[round][cmask.Id])
-
-	ob := make([]byte, BlockSize)
-	Xors(ob, otherBlocks)
-	XorWords(r, ob, r)
+	Xor(Xors(otherBlocks), r)
 	*response = r
 	return nil
 }
