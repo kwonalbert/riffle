@@ -17,6 +17,7 @@ import (
 	"github.com/dedis/crypto/edwards"
 
 	"golang.org/x/crypto/nacl/secretbox"
+	"golang.org/x/crypto/sha3"
 )
 
 //assumes RPC model of communication
@@ -447,13 +448,11 @@ func (c *Client) DownloadSlot(slot int) []byte {
 	Xor(secretsXor, response)
 
 	for i := range c.secretss[round] {
-		rand := c.suite.Cipher(c.secretss[round][i])
-		rand.Read(c.secretss[round][i])
+		sha3.ShakeSum256(c.secretss[round][i], c.secretss[round][i])
 	}
 
 	for i := range c.maskss[round] {
-		rand := c.suite.Cipher(c.maskss[round][i])
-		rand.Read(c.maskss[round][i])
+		sha3.ShakeSum256(c.maskss[round][i], c.maskss[round][i])
 	}
 
 	//fmt.Println(c.id, c.downRound, "update masks", c.masks)

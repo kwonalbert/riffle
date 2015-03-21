@@ -22,6 +22,7 @@ import (
 	"github.com/dedis/crypto/shuffle"
 
 	"golang.org/x/crypto/nacl/secretbox"
+	"golang.org/x/crypto/sha3"
 )
 
 var TotalClients = 0
@@ -68,6 +69,8 @@ type Server struct {
 
 	//all rounds
 	rounds          []*Round
+
+	memProf         *os.File
 }
 
 //per round variables
@@ -161,6 +164,8 @@ func NewServer(addr string, port int, id int, servers []string) *Server {
 		secretss:       nil,
 
 		rounds:         rounds,
+
+		memProf:        nil,
 	}
 
 	for i := range s.auxProofChan {
@@ -214,6 +219,10 @@ func (s *Server) handleRequests(round uint64) {
 			s.rounds[rnd].reqHashesRdy[i] <- true
 		} (i, round)
 	}
+
+        if s.memProf != nil && round == 300 {
+                pprof.WriteHeapProfile(s.memProf)
+        }
 }
 
 func (s *Server) handleResponses(round uint64) {
@@ -232,10 +241,8 @@ func (s *Server) handleResponses(round uint64) {
 		go func(i int, rpcServer *rpc.Client, r uint64) {
 			defer wg.Done()
 			res := ComputeResponse(allBlocks, s.maskss[r][i], s.secretss[r][i])
-			rand := s.suite.Cipher(s.secretss[r][i])
-			rand.Read(s.secretss[r][i])
-			rand = s.suite.Cipher(s.maskss[r][i])
-			rand.Read(s.maskss[r][i])
+			sha3.ShakeSum256(s.secretss[r][i], s.secretss[r][i])
+			sha3.ShakeSum256(s.maskss[r][i], s.maskss[r][i])
 			//fmt.Println(s.id, round, "mask", i, s.maskss[i])
 			cb := ClientBlock {
 				CId: i,
@@ -860,8 +867,7 @@ func (s *Server) GetResponse(cmask ClientMask, response *[]byte) error {
 	wg.Wait()
 	<-s.rounds[round].blocksRdy[cmask.Id]
 	r := ComputeResponse(s.rounds[round].allBlocks, cmask.Mask, s.secretss[round][cmask.Id])
-	rand := s.suite.Cipher(s.secretss[round][cmask.Id])
-	rand.Read(s.secretss[round][cmask.Id])
+	sha3.ShakeSum256(s.secretss[round][cmask.Id], s.secretss[round][cmask.Id])
 	Xor(Xors(otherBlocks), r)
 	*response = r
 	return nil
@@ -957,12 +963,13 @@ func SetTotalClients(n int) {
 func main() {
 	runtime.GOMAXPROCS(runtime.NumCPU())
 	var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
+	var memprofile = flag.String("memprofile", "", "write memory profile to this file")
 	var id *int = flag.Int("i", 0, "id [num]")
 	var servers *string = flag.String("s", "", "servers [file]")
 	var numClients *int = flag.Int("n", 0, "num clients [num]")
 	flag.Parse()
 
-	if *id == 0 && *cpuprofile != "" {
+	if *cpuprofile != "" {
 		f, err := os.Create(*cpuprofile)
 		if err != nil {
 			log.Fatal(err)
@@ -976,6 +983,14 @@ func main() {
 	SetTotalClients(*numClients)
 
 	s := NewServer(ss[*id], ServerPort + *id, *id, ss)
+
+	if *memprofile != "" {
+                f, err := os.Create(*memprofile)
+                if err != nil {
+                        log.Fatal(err)
+                }
+                s.memProf = f
+        }
 
 	rpcServer := rpc.NewServer()
 	rpcServer.Register(s)
