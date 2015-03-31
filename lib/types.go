@@ -13,16 +13,17 @@ type Block struct {
 	Id              int //id is only attached in the first submit
 }
 
+type Request struct {
+	Hash            []byte
+	Round           uint64
+
+	Id              int
+}
+
 type UpKey struct {
 	C1s             [][]byte
 	C2s             [][]byte
 	Id              int
-}
-
-//Dissent model request
-type Request struct {
-	Hash            [][]byte
-	Round           uint64
 }
 
 /////////////////////////////////
@@ -43,11 +44,6 @@ type ClientMask struct {
 type ClientRegistration struct {
 	ServerId        int //the dedicated server
 	Id              int
-}
-
-type ClientRequest struct {
-	Request        Request
-	Id             int
 }
 
 type ClientBlock struct {

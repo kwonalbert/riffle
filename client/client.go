@@ -282,28 +282,24 @@ func (c *Client) ShareSecret() {
 //Request
 ////////////////////////////////
 func (c *Client) RequestBlock(slot int, hash []byte) {
+	t := time.Now()
 	c.reqLock.Lock()
-	round := c.reqRound % MaxRounds
-	reqs := make([][]byte, c.totalClients)
-	for i := range reqs {
-		if i == slot {
-			reqs[i] = hash
-		} else {
-			reqs[i] = make([]byte, len(hash))
-		}
-	}
-	req := Request{Hash: reqs, Round: round}
-	cr := ClientRequest{Request: req, Id: c.id}
+
+	req := Request{Hash: c.seal(hash, c.reqRound), Round: c.reqRound, Id: c.id}
 	c.dhashes <- hash
 
 	// if c.id == 0 {
 	// 	fmt.Println(c.id, c.reqRound, "requesting", hash)
 	// }
 
+	t = time.Now()
 	//TODO: xor in some secrets
-	err := c.rpcServers[c.myServer].Call("Server.RequestBlock", &cr, nil)
+	err := c.rpcServers[c.myServer].Call("Server.RequestBlock", &req, nil)
 	if err != nil {
 		log.Fatal("Couldn't request a block: ", err)
+	}
+	if c.id == 0 {
+		fmt.Println(c.id, "req_network:", time.Since(t))
 	}
 	c.reqRound++
 	c.reqLock.Unlock()
@@ -316,11 +312,14 @@ func (c *Client) DownloadReqHash() [][]byte {
 	c.reqHashLock.Lock()
 	var hashes [][]byte
 	args := RequestArg{Id: c.id, Round: c.reqHashRound}
+	t := time.Now()
 	err := c.rpcServers[c.myServer].Call("Server.GetReqHashes", &args, &hashes)
 	if err != nil {
 		log.Fatal("Couldn't download req hashes: ", err)
 	}
-
+	if c.id == 0 {
+		fmt.Println(c.id, "downreqs_network:", time.Since(t))
+	}
 	// if c.id == 0 && c.reqRound == 0 {
 	// 	fmt.Println(c.reqHashRound, "all reqs", hashes)
 	// }
@@ -338,6 +337,7 @@ func (c *Client) Upload() {
 	var name string
 	var offset int64 = -1
 
+	t := time.Now()
 	//TODO: probably replace with hash map mapping hashes to file names
 	for n, f := range c.files {
 		fhashes := f.Hashes
@@ -362,30 +362,24 @@ func (c *Client) Upload() {
 			log.Fatal("Failed reading file", name, ":", err)
 		}
 	}
-
+	if c.id == 0 {
+		fmt.Println(c.id, "file_read:", time.Since(t))
+	}
 	c.UploadBlock(Block{Block: match, Round: c.upRound, Id: c.id})
 	c.upRound++
 	c.upLock.Unlock()
 }
 
 func (c *Client) UploadBlock(block Block) {
-	msg := block.Block
+	block.Block = c.seal(block.Block, c.upRound)
 
-	round := make([]byte, 24)
-	binary.PutUvarint(round, c.upRound)
-	nonce := [24]byte{}
-	copy(nonce[:], round[:])
-	for i := range c.servers {
-		idx := len(c.servers) - i - 1
-		key := [32]byte{}
-		copy(key[:], c.keys[idx][:])
-		msg = secretbox.Seal(nil, msg, &nonce, &key)
-	}
-	block.Block = msg
-
+	t := time.Now()
 	err := c.rpcServers[c.myServer].Call("Server.UploadBlock", &block, nil)
 	if err != nil {
 		log.Fatal("Couldn't upload a block: ", err)
+	}
+	if c.id == 0 {
+		fmt.Println(c.id, "up_network:", time.Since(t))
 	}
 }
 
@@ -408,9 +402,13 @@ func (c *Client) Download() []byte {
 func (c *Client) DownloadBlock(hash []byte) []byte {
 	var hashes [][]byte
 	args := RequestArg{Id: c.id, Round: c.downRound}
+	t := time.Now()
 	err := c.rpcServers[c.myServer].Call("Server.GetUpHashes", &args, &hashes)
 	if err != nil {
 		log.Fatal("Couldn't download up hashes: ", err)
+	}
+	if c.id == 0 {
+		fmt.Println(c.id, "getuphash_network:", time.Since(t))
 	}
 
 	// if c.id == 0 {
@@ -440,10 +438,17 @@ func (c *Client) DownloadSlot(slot int) []byte {
 	response := make([]byte, BlockSize)
 	secretsXor := Xors(c.secretss[round])
 	cMask := ClientMask {Mask: mask, Id: c.id, Round: c.downRound}
+
+	t := time.Now()
 	err := c.rpcServers[c.myServer].Call("Server.GetResponse", cMask, &response)
 	if err != nil {
 		log.Fatal("Could not get response: ", err)
 	}
+
+	if c.id == 0 {
+		fmt.Println(c.id, "down_network_total:", time.Since(t))
+	}
+
 
 	Xor(secretsXor, response)
 
@@ -463,6 +468,21 @@ func (c *Client) DownloadSlot(slot int) []byte {
 /////////////////////////////////
 //Misc (mostly for testing)
 ////////////////////////////////
+func (c *Client) seal(input []byte, round uint64) []byte {
+	msg := input
+	rnd := make([]byte, 24)
+	binary.PutUvarint(rnd, round)
+	nonce := [24]byte{}
+	copy(nonce[:], rnd[:])
+	for i := range c.servers {
+		idx := len(c.servers) - i - 1
+		key := [32]byte{}
+		copy(key[:], c.keys[idx][:])
+		msg = secretbox.Seal(nil, msg, &nonce, &key)
+	}
+	return msg
+}
+
 func (c *Client) RegisterBlock(block []byte) {
 	h := c.suite.Hash()
 	h.Write(block)
@@ -520,7 +540,6 @@ func (c *Client) ClearHashes() {
 	c.rpcServers[c.myServer].Call("Server.GetUpHashes", c.id, nil)
 }
 
-
 /////////////////////////////////
 //MAIN
 /////////////////////////////////
@@ -538,7 +557,7 @@ func main() {
 	c.RegisterDone(0)
 	fmt.Println(c.id, "Sharing secret...")
 	c.ShareSecret()
-	c.UploadKeys(0)
+	//c.UploadKeys(0)
 
 	fmt.Println("Started client", c.id)
 

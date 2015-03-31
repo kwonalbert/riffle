@@ -14,6 +14,8 @@ import (
 	"runtime/pprof"
 	"sync"
 
+	"time"
+
 	. "afs/lib" //types and utils
 
 	"github.com/dedis/crypto/abstract"
@@ -78,19 +80,20 @@ type Round struct {
 	allBlocks       []Block //all blocks store on this server
 
 	//requesting
-	requestsChan    []chan Request
+	reqChan2        []chan Request
+	requestsChan    chan []Request
 	reqHashes       [][]byte
 	reqHashesRdy    []chan bool
 
 	//uploading
 	ublockChan2     []chan Block
 	shuffleChan     chan []Block
+	upHashesRdy     []chan bool
 
 	//downloading
 	upHashes        [][]byte
 	dblocksChan     chan []Block
 	blocksRdy       []chan bool
-	upHashesRdy     []chan bool
 	xorsChan        []map[int](chan Block)
 }
 
@@ -112,17 +115,18 @@ func NewServer(addr string, port int, id int, servers []string) *Server {
 		r := Round{
 			allBlocks:      nil,
 
+			reqChan2:       nil,
 			requestsChan:   nil,
 			reqHashes:      nil,
 			reqHashesRdy:   nil,
 
 			ublockChan2:    nil,
 			shuffleChan:    make(chan []Block), //collect all uploads together
+			upHashesRdy:    nil,
 
 			upHashes:       nil,
 			dblocksChan:    make(chan []Block),
 			blocksRdy:      nil,
-			upHashesRdy:    nil,
 			xorsChan:       make([]map[int](chan Block), len(servers)),
 		}
 		rounds[i] = &r
@@ -187,7 +191,8 @@ func (s *Server) runHandlers() {
 	runHandler(s.gatherKeys, 1)
 	runHandler(s.shuffleKeys, 1)
 
-	runHandler(s.handleRequests, MaxRounds)
+	runHandler(s.gatherRequests, MaxRounds)
+	runHandler(s.shuffleRequests, MaxRounds)
 	runHandler(s.gatherUploads, MaxRounds)
 	runHandler(s.shuffleUploads, MaxRounds)
 	runHandler(s.handleResponses, MaxRounds)
@@ -195,34 +200,63 @@ func (s *Server) runHandlers() {
 	s.running <- true
 }
 
-func (s *Server) handleRequests(round uint64) {
+func (s *Server) gatherRequests(round uint64) {
 	rnd := round % MaxRounds
-	allRequests := make([][][]byte, s.totalClients)
-
+	allReqs := make([]Request, s.totalClients)
 	var wg sync.WaitGroup
-	for i := range allRequests {
+	for i := 0; i < s.totalClients; i++ {
 		wg.Add(1)
 		go func (i int) {
 			defer wg.Done()
-			req := <-s.rounds[rnd].requestsChan[i]
-			allRequests[i] = req.Hash
+			req := <-s.rounds[rnd].reqChan2[i]
+			req.Id = 0
+			allReqs[i] = req
 		} (i)
 	}
 	wg.Wait()
 
-	s.rounds[rnd].reqHashes = XorsDC(allRequests)
-	for i := range s.rounds[rnd].reqHashesRdy {
-		if s.clientMap[i] != s.id {
-			continue
-		}
-		go func(i int, round uint64) {
-			s.rounds[rnd].reqHashesRdy[i] <- true
-		} (i, round)
+	s.rounds[rnd].requestsChan <- allReqs
+}
+
+func (s *Server) shuffleRequests(round uint64) {
+	rnd := round % MaxRounds
+	allReqs := <-s.rounds[rnd].requestsChan
+
+	//construct permuted blocks
+	input := make([][]byte, s.totalClients)
+	for i := range input {
+		input[i] = allReqs[s.pi[i]].Hash
 	}
 
-        if s.memProf != nil && round == 300 {
-                pprof.WriteHeapProfile(s.memProf)
-        }
+	s.shuffle(input, round)
+
+	reqs := make([]Request, s.totalClients)
+	for i := range reqs {
+		reqs[i] = Request{Hash: input[i], Round: round, Id: 0}
+	}
+
+	t := time.Now()
+	if s.id == len(s.servers) - 1 {
+		var wg sync.WaitGroup
+		for _, rpcServer := range s.rpcServers {
+			wg.Add(1)
+			go func(rpcServer *rpc.Client) {
+				defer wg.Done()
+				err := rpcServer.Call("Server.PutPlainRequests", &reqs, nil)
+				if err != nil {
+					log.Fatal("Failed uploading shuffled and decoded reqs: ", err)
+				}
+			} (rpcServer)
+		}
+		wg.Wait()
+	} else {
+		err := s.rpcServers[s.id+1].Call("Server.ShareServerRequests", &reqs, nil)
+		if err != nil {
+			log.Fatal("Couldn't hand off the requests to next server", s.id+1, err)
+		}
+	}
+
+	fmt.Println("round", round, ". ", s.id, "server shuffle req: ", time.Since(t))
 }
 
 func (s *Server) handleResponses(round uint64) {
@@ -230,6 +264,8 @@ func (s *Server) handleResponses(round uint64) {
 	allBlocks := <-s.rounds[rnd].dblocksChan
 	//store it on this server as well
 	s.rounds[rnd].allBlocks = allBlocks
+
+	t := time.Now()
 
 	var wg sync.WaitGroup
 	for i := 0; i < s.totalClients; i++ {
@@ -259,6 +295,8 @@ func (s *Server) handleResponses(round uint64) {
 		} (i, s.rpcServers[s.clientMap[i]], rnd)
 	}
 	wg.Wait()
+
+	fmt.Println(s.id, "handling_resp:", time.Since(t))
 
 	for i := range s.rounds[rnd].blocksRdy {
 		if s.clientMap[i] != s.id {
@@ -293,39 +331,19 @@ func (s *Server) shuffleUploads(round uint64) {
 	allBlocks := <-s.rounds[rnd].shuffleChan
 
 	//construct permuted blocks
+	input := make([][]byte, s.totalClients)
+	for i := range input {
+		input[i] = allBlocks[s.pi[i]].Block
+	}
+
+	s.shuffle(input, round)
+
 	uploads := make([]Block, s.totalClients)
-
 	for i := range uploads {
-		uploads[i] = Block{Block: allBlocks[s.pi[i]].Block, Round: round, Id: 0}
+		uploads[i] = Block{Block: input[i], Round: round, Id: 0}
 	}
 
-	tmp := make([]byte, 24)
-	binary.PutUvarint(tmp, round)
-	nonce := [24]byte{}
-	copy(nonce[:], tmp[:])
-
-	var aesWG sync.WaitGroup
-	for i := 0; i < s.totalClients; i++ {
-		aesWG.Add(1)
-		go func(i int) {
-			defer aesWG.Done()
-			key := [32]byte{}
-			copy(key[:], s.keys[i][:])
-			var good bool
-			uploads[i].Block, good = secretbox.Open(nil, uploads[i].Block, &nonce, &key)
-			if !good {
-				fmt.Println("client", s.pi[i], allBlocks[s.pi[i]])
-				log.Fatal(round, "Check failed:", s.id, i)
-			}
-		} (i)
-	}
-	aesWG.Wait()
-
-	if s.id == len(s.servers) - 1 {
-		if len(uploads[0].Block) != BlockSize {
-			log.Fatal("wrong message size...")
-		}
-	}
+	t := time.Now()
 
 	if s.id == len(s.servers) - 1 {
 		var wg sync.WaitGroup
@@ -346,6 +364,7 @@ func (s *Server) shuffleUploads(round uint64) {
 			log.Fatal("Couldn't hand off the blocks to next server", s.id+1, err)
 		}
 	}
+	fmt.Println("round", round, ". ", s.id, "server shuffle: ", time.Since(t))
 }
 
 func (s *Server) gatherKeys(_ uint64) {
@@ -584,18 +603,17 @@ func (s *Server) RegisterDone2(numClients int, _ *int) error {
 			}
 		}
 
-		s.rounds[r].requestsChan = make([]chan Request, numClients)
+		s.rounds[r].requestsChan = make(chan []Request)
+		s.rounds[r].reqHashes = make([][]byte, numClients)
 
-		for i := range s.rounds[r].requestsChan {
-			s.rounds[r].requestsChan[i] = make(chan Request)
-		}
-
+		s.rounds[r].reqChan2 = make([]chan Request, numClients)
 		s.rounds[r].upHashes = make([][]byte, numClients)
 		s.rounds[r].blocksRdy = make([]chan bool, numClients)
 		s.rounds[r].upHashesRdy = make([]chan bool, numClients)
 		s.rounds[r].reqHashesRdy = make([]chan bool, numClients)
 		s.rounds[r].ublockChan2 = make([]chan Block, numClients)
 		for i := range s.rounds[r].blocksRdy {
+			s.rounds[r].reqChan2[i] = make(chan Request)
 			s.rounds[r].blocksRdy[i] = make(chan bool)
 			s.rounds[r].upHashesRdy[i] = make(chan bool)
 			s.rounds[r].reqHashesRdy[i] = make(chan bool)
@@ -759,25 +777,33 @@ func (s *Server) KeyReady(id int, _ *int) error {
 /////////////////////////////////
 //Request
 ////////////////////////////////
-func (s *Server) RequestBlock(cr *ClientRequest, _ *int) error {
-	var wg sync.WaitGroup
-	for i, rpcServer := range s.rpcServers {
-		wg.Add(1)
-		go func (i int, rpcServer *rpc.Client) {
-			defer wg.Done()
-			err := rpcServer.Call("Server.ShareRequest", cr, nil)
-			if err != nil {
-				log.Fatal("Couldn't share request: ", err)
-			}
-		} (i, rpcServer)
-	}
-	wg.Wait()
+func (s *Server) RequestBlock(r *Request, _ *int) error {
+	err := s.rpcServers[0].Call("Server.RequestBlock2", r, nil)
+	return err
+}
+
+func (s *Server) RequestBlock2(r *Request, _ *int) error {
+	round := r.Round % MaxRounds
+	s.rounds[round].reqChan2[r.Id] <- *r
 	return nil
 }
 
-func (s *Server) ShareRequest(cr *ClientRequest, _ *int) error {
-	round := cr.Request.Round % MaxRounds
-	s.rounds[round].requestsChan[cr.Id] <- cr.Request
+func (s *Server) PutPlainRequests(rs *[]Request, _ *int) error {
+	reqs := *rs
+	round := reqs[0].Round % MaxRounds
+	for i := range reqs {
+		s.rounds[round].reqHashes[i] = reqs[i].Hash
+	}
+
+	for i := range s.rounds[round].reqHashesRdy {
+		if s.clientMap[i] != s.id {
+			continue
+		}
+		go func(i int, round uint64) {
+			s.rounds[round].reqHashesRdy[i] <- true
+		} (i, round)
+	}
+
 	return nil
 }
 
@@ -785,6 +811,12 @@ func (s *Server) GetReqHashes(args *RequestArg, hashes *[][]byte) error {
 	round := args.Round % MaxRounds
 	<-s.rounds[round].reqHashesRdy[args.Id]
 	*hashes = s.rounds[round].reqHashes
+	return nil
+}
+
+func (s *Server) ShareServerRequests(reqs *[]Request, _ *int) error {
+	round := (*reqs)[0].Round % MaxRounds
+	s.rounds[round].requestsChan <- *reqs
 	return nil
 }
 
@@ -848,6 +880,7 @@ func (s *Server) GetUpHashes(args *RequestArg, hashes *[][]byte) error {
 }
 
 func (s *Server) GetResponse(cmask ClientMask, response *[]byte) error {
+	t := time.Now()
 	round := cmask.Round % MaxRounds
 	otherBlocks := make([][]byte, len(s.servers))
 	var wg sync.WaitGroup
@@ -866,6 +899,10 @@ func (s *Server) GetResponse(cmask ClientMask, response *[]byte) error {
 	}
 	wg.Wait()
 	<-s.rounds[round].blocksRdy[cmask.Id]
+	if cmask.Id == 0 {
+		fmt.Println(cmask.Id, "down_network:", time.Since(t))
+	}
+
 	r := ComputeResponse(s.rounds[round].allBlocks, cmask.Mask, s.secretss[round][cmask.Id])
 	sha3.ShakeSum256(s.secretss[round][cmask.Id], s.secretss[round][cmask.Id])
 	Xor(Xors(otherBlocks), r)
@@ -927,6 +964,29 @@ func (s *Server) verifyShuffle(ik InternalKey, aux AuxKeyProof) bool {
 		}
 	}
 	return true
+}
+
+func (s *Server) shuffle(input [][]byte, round uint64) {
+	tmp := make([]byte, 24)
+	nonce := [24]byte{}
+	binary.PutUvarint(tmp, round)
+	copy(nonce[:], tmp[:])
+
+	var aesWG sync.WaitGroup
+	for i := 0; i < s.totalClients; i++ {
+		aesWG.Add(1)
+		go func(i int) {
+			defer aesWG.Done()
+			key := [32]byte{}
+			copy(key[:], s.keys[i][:])
+			var good bool
+			input[i], good = secretbox.Open(nil, input[i], &nonce, &key)
+			if !good {
+				log.Fatal(round, "Check failed:", s.id, i)
+			}
+		} (i)
+	}
+	aesWG.Wait()
 }
 
 func (s *Server) Masks() [][][]byte {

@@ -13,28 +13,33 @@ if n % node_num == 0:
 else:
     per_node = n/node_num + 1
 
-server_cmd = "/users/kwonal/workspace/gos/bin/server -i %d -n %d -s /users/kwonal/workspace/gos/src/afs/servers -cpuprofile prof%d"
-command = "zsh /users/kwonal/workspace/gos/src/afs/spawn_clients.sh %d %d %d %d"
+serv_name = 'draco%d'
+node_name = 'draco%d'
+serv_start = 20
+node_start = 1
 
+
+server_cmd = "/afs/csail.mit.edu/u/k/kwonal/workspace/gos/bin/server -i %d -n %d -s /afs/csail.mit.edu/u/k/kwonal/workspace/gos/src/afs/servers -cpuprofile cpuprof%d -memprofile memprof%d"
+command = "zsh /afs/csail.mit.edu/u/k/kwonal/workspace/gos/src/afs/spawn_clients.sh %d %d %d %d"
 
 def spawn(node, c):
-    os.system('ssh %s "%s"' % (node, c))
+    os.system('ssh -p 22 %s "%s"' % (node, c))
 
 ss = []
 for i in range(m):
-    c = server_cmd % (i, n, i)
-    t = threading.Thread(target=spawn, args=('server%d' % i, c,))
+    c = server_cmd % (i, n, i, i)
+    t = threading.Thread(target=spawn, args=(serv_name % (serv_start + i), c,))
     ss.append(t)
     t.start()
 
 time.sleep(2)
 
-node = 0
+node = node_start
 
 ts = []
 for i in range(0, n, per_node):
     c = command % (i, min(i+per_node,n), n, node % m)
-    t = threading.Thread(target=spawn, args=('node%d' % node, c,))
+    t = threading.Thread(target=spawn, args=(node_name % node, c,))
     ts.append(t)
     t.start()
     #print i, n, per_node, node
@@ -46,6 +51,6 @@ for t in ts:
 ts = []
 for i in range(m):
     c = "killall server"
-    t = threading.Thread(target=spawn, args=('server%d' % i, c,))
+    t = threading.Thread(target=spawn, args=(serv_name % (serv_start + i), c,))
     ts.append(t)
     t.start()

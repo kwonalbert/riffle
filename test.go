@@ -49,7 +49,7 @@ func setup(numServers int, numClients int) ([]*Server, []*Client) {
 			c.Register(0)
 			c.RegisterDone(0)
 			c.ShareSecret()
-			c.UploadKeys(0)
+			//c.UploadKeys(0)
 		} (i)
 	}
 	wg.Wait()
