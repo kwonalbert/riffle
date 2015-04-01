@@ -2,6 +2,7 @@
 package main
 
 import (
+	"crypto/rand"
 	"encoding/binary"
 	"flag"
 	"fmt"
@@ -20,14 +21,18 @@ import (
 	"golang.org/x/crypto/sha3"
 )
 
-//assumes RPC model of communication
+var profile = false
+var debug = false
 
+//assumes RPC model of communication
 type Client struct {
 	id              int //client id
 	servers         []string //all servers
 	rpcServers      []*rpc.Client
 	myServer        int //server downloading from (using PIR)
 	totalClients    int
+
+	fsMode          bool //true for microblogging, false for file sharing
 
 	files           map[string]*File //files in hand; filename to hashes
 	osFiles         map[string]*os.File
@@ -58,13 +63,12 @@ type Client struct {
 	secretss        [][][]byte //secret for data
 }
 
-func NewClient(servers []string, myServer string) *Client {
+func NewClient(servers []string, myServer string, fsMode bool) *Client {
 	suite := edwards.NewAES128SHA256Ed25519(false)
 
 	myServerIdx := -1
 	rpcServers := make([]*rpc.Client, len(servers))
 	for i := range rpcServers {
-		fmt.Println("client connecting to", servers[i])
 		if servers[i] == myServer {
 			myServerIdx = i
 		}
@@ -98,6 +102,8 @@ func NewClient(servers []string, myServer string) *Client {
 		rpcServers:     rpcServers,
 		myServer:       myServerIdx,
 		totalClients:   -1,
+
+		fsMode:         fsMode,
 
 		files:          make(map[string]*File),
 		osFiles:        make(map[string]*os.File),
@@ -183,7 +189,6 @@ func (c *Client) UploadKeys(idx int) {
 		c1s[i], c2s[i] = EncryptKey(c.g, keyPts[i], c.pks[:i+1])
 	}
 
-	//fmt.Println(c.id, "client pt", c.upRound, MarshalPoint(public))
 	upkey := UpKey {
 		C1s: make([][]byte, len(c1s)),
 		C2s: make([][]byte, len(c1s)),
@@ -253,26 +258,23 @@ func (c *Client) ShareSecret() {
 	}
 	wg.Wait()
 
-	//fmt.Println(c.id, "masks", c.masks)
 	for r := range c.secretss {
 		for i := range c.secretss[r] {
 			if r == 0 {
-				rand = c.suite.Cipher(secrets[i])
+				sha3.ShakeSum256(c.secretss[r][i], secrets[i])
 			} else {
-				rand = c.suite.Cipher(c.secretss[r-1][i])
+				sha3.ShakeSum256(c.secretss[r][i], c.secretss[r-1][i])
 			}
-			rand.Read(c.secretss[r][i])
 		}
 	}
 
 	for r := range c.maskss {
 		for i := range c.maskss[r] {
 			if r == 0 {
-				rand = c.suite.Cipher(masks[i])
+				sha3.ShakeSum256(c.maskss[r][i], masks[i])
 			} else {
-				rand = c.suite.Cipher(c.maskss[r-1][i])
+				sha3.ShakeSum256(c.maskss[r][i], c.maskss[r-1][i])
 			}
-			rand.Read(c.maskss[r][i])
 		}
 	}
 
@@ -288,9 +290,9 @@ func (c *Client) RequestBlock(slot int, hash []byte) {
 	req := Request{Hash: c.seal(hash, c.reqRound), Round: c.reqRound, Id: c.id}
 	c.dhashes <- hash
 
-	// if c.id == 0 {
-	// 	fmt.Println(c.id, c.reqRound, "requesting", hash)
-	// }
+	if c.id == 0 && debug {
+		fmt.Println(c.id, c.reqRound, "requesting", hash)
+	}
 
 	t = time.Now()
 	//TODO: xor in some secrets
@@ -298,7 +300,7 @@ func (c *Client) RequestBlock(slot int, hash []byte) {
 	if err != nil {
 		log.Fatal("Couldn't request a block: ", err)
 	}
-	if c.id == 0 {
+	if c.id == 0 && profile {
 		fmt.Println(c.id, "req_network:", time.Since(t))
 	}
 	c.reqRound++
@@ -317,12 +319,12 @@ func (c *Client) DownloadReqHash() [][]byte {
 	if err != nil {
 		log.Fatal("Couldn't download req hashes: ", err)
 	}
-	if c.id == 0 {
+	if c.id == 0 && profile {
 		fmt.Println(c.id, "downreqs_network:", time.Since(t))
 	}
-	// if c.id == 0 && c.reqRound == 0 {
-	// 	fmt.Println(c.reqHashRound, "all reqs", hashes)
-	// }
+	if c.id == 0 && debug {
+		fmt.Println(c.reqHashRound, "all reqs", hashes)
+	}
 
 	c.reqHashRound++
 	c.reqHashLock.Unlock()
@@ -362,11 +364,10 @@ func (c *Client) Upload() {
 			log.Fatal("Failed reading file", name, ":", err)
 		}
 	}
-	if c.id == 0 {
+	if c.id == 0 && profile {
 		fmt.Println(c.id, "file_read:", time.Since(t))
 	}
 	c.UploadBlock(Block{Block: match, Round: c.upRound, Id: c.id})
-	c.upRound++
 	c.upLock.Unlock()
 }
 
@@ -378,9 +379,10 @@ func (c *Client) UploadBlock(block Block) {
 	if err != nil {
 		log.Fatal("Couldn't upload a block: ", err)
 	}
-	if c.id == 0 {
+	if c.id == 0 && profile {
 		fmt.Println(c.id, "up_network:", time.Since(t))
 	}
+	c.upRound++
 }
 
 
@@ -390,13 +392,23 @@ func (c *Client) UploadBlock(block Block) {
 func (c *Client) Download() []byte {
 	c.downLock.Lock()
 	hash := <-c.dhashes
- 	// if c.id == 0 {
-	// 	fmt.Println(c.id, "hash", hash)
-	// }
 	block := c.DownloadBlock(hash)
 	c.downRound++
 	c.downLock.Unlock()
 	return block
+}
+
+func (c *Client) DownloadAll() [][]byte {
+	c.downLock.Lock()
+	args := RequestArg{Id: c.id, Round: c.downRound}
+	resps := make([][]byte, c.totalClients)
+	err := c.rpcServers[c.myServer].Call("Server.GetAllResponses", &args, &resps)
+	if err != nil {
+		log.Fatal("Couldn't download up hashes: ", err)
+	}
+	c.downRound++
+	c.downLock.Unlock()
+	return resps
 }
 
 func (c *Client) DownloadBlock(hash []byte) []byte {
@@ -407,13 +419,13 @@ func (c *Client) DownloadBlock(hash []byte) []byte {
 	if err != nil {
 		log.Fatal("Couldn't download up hashes: ", err)
 	}
-	if c.id == 0 {
+	if c.id == 0 && profile {
 		fmt.Println(c.id, "getuphash_network:", time.Since(t))
 	}
 
-	// if c.id == 0 {
-	// 	fmt.Println(c.id, c.downRound, "down hashes", hashes)
-	// }
+	if c.id == 0 && debug {
+		fmt.Println(c.id, c.downRound, "down hashes", hash, hashes)
+	}
 
 	idx := Membership(hash, hashes)
 
@@ -445,7 +457,7 @@ func (c *Client) DownloadSlot(slot int) []byte {
 		log.Fatal("Could not get response: ", err)
 	}
 
-	if c.id == 0 {
+	if c.id == 0 && profile {
 		fmt.Println(c.id, "down_network_total:", time.Since(t))
 	}
 
@@ -459,8 +471,6 @@ func (c *Client) DownloadSlot(slot int) []byte {
 	for i := range c.maskss[round] {
 		sha3.ShakeSum256(c.maskss[round][i], c.maskss[round][i])
 	}
-
-	//fmt.Println(c.id, c.downRound, "update masks", c.masks)
 
 	return response
 }
@@ -488,7 +498,6 @@ func (c *Client) RegisterBlock(block []byte) {
 	h.Write(block)
 	hash := h.Sum(nil)
 	c.testPieces[string(hash)] = block
-	//fmt.Println(c.id, "registering", hash)
 }
 
 func (c *Client) UploadPieces() {
@@ -503,11 +512,11 @@ func (c *Client) UploadPieces() {
 		break
 	}
 
-	// h := c.suite.Hash()
-	// h.Write(match)
-	// if c.upRound == 0 {
-	// 	fmt.Println(c.id, "uploading", match, h.Sum(nil))
-	// }
+	h := c.suite.Hash()
+	h.Write(match)
+	if c.upRound == 0 && debug {
+		fmt.Println(c.id, "uploading", match, h.Sum(nil))
+	}
 
 	//TODO: handle unfound hash..
 	if match == nil {
@@ -548,42 +557,43 @@ func main() {
 	var f *string = flag.String("f", "", "file [file]") //file in possession
 	var s *int = flag.Int("i", 0, "server [id]") //my server id
 	var servers *string = flag.String("s", "", "servers [file]")
+	var mode *string = flag.String("m", "", "mode [m for microblogging|f for file sharing]")
 	flag.Parse()
 
 	ss := ParseServerList(*servers)
 
-	c := NewClient(ss, ss[*s])
+	c := NewClient(ss, ss[*s], *mode == "f")
 	c.Register(0)
 	c.RegisterDone(0)
-	fmt.Println(c.id, "Sharing secret...")
 	c.ShareSecret()
 	//c.UploadKeys(0)
 
 	fmt.Println("Started client", c.id)
 
-	file, err := NewFile(c.suite, *f)
-	if err != nil {
-		log.Fatal("Failed reading the file in hand", err)
-	}
-	c.files[*f] = file
-	c.osFiles[*f], _ = os.Open(*f)
-
-	wanted, err := NewDesc(*wf)
-	if err != nil {
-		log.Fatal("Failed reading the torrent file", err)
-	}
-
-	// newFile := fmt.Sprintf("%s.file", *wf)
-	// nf, err := os.Create(newFile)
-	// if err != nil {
-	// 	log.Fatal("Failed creating dest file", err)
-	// }
 	if c.id == 0 {
-		defer TimeTrack(time.Now(), fmt.Sprintf("sharing %d chunks", len(wanted)))
+		defer TimeTrack(time.Now(), "total time:")
 	}
 
-	var wg sync.WaitGroup
-	//for {
+	if c.fsMode {
+		file, err := NewFile(c.suite, *f)
+		if err != nil {
+			log.Fatal("Failed reading the file in hand", err)
+		}
+		c.files[*f] = file
+		c.osFiles[*f], _ = os.Open(*f)
+
+		wanted, err := NewDesc(*wf)
+		if err != nil {
+			log.Fatal("Failed reading the torrent file", err)
+		}
+
+		// newFile := fmt.Sprintf("%s.file", *wf)
+		// nf, err := os.Create(newFile)
+		// if err != nil {
+		// 	log.Fatal("Failed creating dest file", err)
+		// }
+
+		var wg sync.WaitGroup
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -595,7 +605,7 @@ func main() {
 
 		//wg.Add(1)
 		go func() {
-			//defer wg.Done()
+		//defer wg.Done()
 			for {
 				c.Upload()
 				//fmt.Println(c.id, "Uploaded", c.upRound)
@@ -606,11 +616,11 @@ func main() {
 		go func() {
 			defer wg.Done()
 			for _, _ = range wanted {
-				res := c.Download()
-				h := c.suite.Hash()
-				h.Write(res)
-				hash := h.Sum(nil)
-				_ = wanted[string(hash)]
+				c.Download()
+				// h := c.suite.Hash()
+				// h.Write(res)
+				// hash := h.Sum(nil)
+				// _ = wanted[string(hash)]
 				//nf.WriteAt(res, offset)
 				if c.id == 0 {
 					fmt.Println(c.id, "Downloaded", c.downRound)
@@ -619,6 +629,27 @@ func main() {
 		}()
 
 		wg.Wait()
-	//}
-
+	} else {
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 40; i++ {
+				block := make([]byte, BlockSize)
+				rand.Read(block)
+				c.UploadBlock(Block{Block: block, Round: c.upRound, Id: c.id})
+			}
+		} ()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 40; i++ {
+				c.DownloadAll()
+				if c.id == 0 && (c.downRound % 10 == 0) {
+					fmt.Println(c.id, "Downloaded", c.downRound)
+				}
+			}
+		} ()
+		wg.Wait()
+	}
 }

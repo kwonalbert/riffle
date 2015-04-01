@@ -28,6 +28,8 @@ import (
 )
 
 var TotalClients = 0
+var profile = false
+var debug = false
 
 //any variable/func with 2: similar object as s-c but only s-s
 type Server struct {
@@ -42,6 +44,8 @@ type Server struct {
 	connectDone     chan bool
 	running         chan bool
 	secretLock      *sync.Mutex
+
+	fsMode          bool //true for microblogging, false for file sharing
 
 	//crypto
 	suite           abstract.Suite
@@ -101,7 +105,7 @@ type Round struct {
 //Initial Setup
 //////////////////////////////
 
-func NewServer(addr string, port int, id int, servers []string) *Server {
+func NewServer(addr string, port int, id int, servers []string, fsMode bool) *Server {
 	suite := edwards.NewAES128SHA256Ed25519(false)
 	rand := suite.Cipher(abstract.RandomKey)
 	sk := suite.Secret().Pick(rand)
@@ -168,6 +172,8 @@ func NewServer(addr string, port int, id int, servers []string) *Server {
 		secretss:       nil,
 
 		rounds:         rounds,
+
+		fsMode:         fsMode,
 
 		memProf:        nil,
 	}
@@ -256,7 +262,9 @@ func (s *Server) shuffleRequests(round uint64) {
 		}
 	}
 
-	fmt.Println("round", round, ". ", s.id, "server shuffle req: ", time.Since(t))
+	if profile {
+		fmt.Println("round", round, ". ", s.id, "server shuffle req: ", time.Since(t))
+	}
 }
 
 func (s *Server) handleResponses(round uint64) {
@@ -265,39 +273,42 @@ func (s *Server) handleResponses(round uint64) {
 	//store it on this server as well
 	s.rounds[rnd].allBlocks = allBlocks
 
-	t := time.Now()
+	if s.fsMode {
+		t := time.Now()
 
-	var wg sync.WaitGroup
-	for i := 0; i < s.totalClients; i++ {
-		if s.clientMap[i] == s.id {
-			continue
+		var wg sync.WaitGroup
+		for i := 0; i < s.totalClients; i++ {
+			if s.clientMap[i] == s.id {
+				continue
+			}
+			//if it doesnt belong to me, xor things and send it over
+			wg.Add(1)
+			go func(i int, rpcServer *rpc.Client, r uint64) {
+				defer wg.Done()
+				res := ComputeResponse(allBlocks, s.maskss[r][i], s.secretss[r][i])
+				sha3.ShakeSum256(s.secretss[r][i], s.secretss[r][i])
+				sha3.ShakeSum256(s.maskss[r][i], s.maskss[r][i])
+				//fmt.Println(s.id, round, "mask", i, s.maskss[i])
+				cb := ClientBlock {
+					CId: i,
+					SId: s.id,
+					Block: Block {
+						Block: res,
+						Round: round,
+					},
+				}
+				err := rpcServer.Call("Server.PutClientBlock", cb, nil)
+				if err != nil {
+					log.Fatal("Couldn't put block: ", err)
+				}
+			} (i, s.rpcServers[s.clientMap[i]], rnd)
 		}
-		//if it doesnt belong to me, xor things and send it over
-		wg.Add(1)
-		go func(i int, rpcServer *rpc.Client, r uint64) {
-			defer wg.Done()
-			res := ComputeResponse(allBlocks, s.maskss[r][i], s.secretss[r][i])
-			sha3.ShakeSum256(s.secretss[r][i], s.secretss[r][i])
-			sha3.ShakeSum256(s.maskss[r][i], s.maskss[r][i])
-			//fmt.Println(s.id, round, "mask", i, s.maskss[i])
-			cb := ClientBlock {
-				CId: i,
-				SId: s.id,
-				Block: Block {
-					Block: res,
-					Round: round,
-				},
-			}
-			err := rpcServer.Call("Server.PutClientBlock", cb, nil)
-			if err != nil {
-				log.Fatal("Couldn't put block: ", err)
-			}
-		} (i, s.rpcServers[s.clientMap[i]], rnd)
+		wg.Wait()
+
+		if profile {
+			fmt.Println(s.id, "handling_resp:", time.Since(t))
+		}
 	}
-	wg.Wait()
-
-	fmt.Println(s.id, "handling_resp:", time.Since(t))
-
 	for i := range s.rounds[rnd].blocksRdy {
 		if s.clientMap[i] != s.id {
 			continue
@@ -364,7 +375,9 @@ func (s *Server) shuffleUploads(round uint64) {
 			log.Fatal("Couldn't hand off the blocks to next server", s.id+1, err)
 		}
 	}
-	fmt.Println("round", round, ". ", s.id, "server shuffle: ", time.Since(t))
+	if profile {
+		fmt.Println("round", round, ". ", s.id, "server shuffle: ", time.Since(t))
+	}
 }
 
 func (s *Server) gatherKeys(_ uint64) {
@@ -413,23 +426,13 @@ func (s *Server) gatherKeys(_ uint64) {
 	}
 	wg.Wait()
 
-	//fmt.Println(s.id, "done gathering")
 	s.keyShuffleChan <- ik
 }
 
 func (s *Server) shuffleKeys(_ uint64) {
 	keys := <-s.keyShuffleChan
 
-	//fmt.Println(s.id, "shuffle start: ", round)
-
-	//shuffle and reblind
-
 	serversLeft := len(s.servers)-s.id
-	// for _, upload := range allKeys {
-	// 	if hashChunks != len(upload.HC1[0])  {
-	// 		panic("Different chunk lengths")
-	// 	}
-	// }
 
 	Xss := make([][]abstract.Point, serversLeft)
 	Yss := make([][]abstract.Point, serversLeft)
@@ -520,8 +523,6 @@ func (s *Server) shuffleKeys(_ uint64) {
 		} (rpcServer)
 	}
 	wg.Wait()
-
-	fmt.Println(s.id, "shuffle done")
 }
 
 /////////////////////////////////
@@ -587,8 +588,7 @@ func (s *Server) RegisterDone2(numClients int, _ *int) error {
 		}
 	}
 
-	rand := s.suite.Cipher(abstract.RandomKey)
-	s.pi = GeneratePI(numClients, rand)
+	s.pi = GeneratePI(numClients)
 
 	s.keys = make([][]byte, numClients)
 	s.keysRdy = make(chan bool, numClients)
@@ -698,14 +698,12 @@ func (s *Server) shareSecret(clientPublic abstract.Point) (abstract.Point, abstr
 func (s *Server) ShareMask(clientDH *ClientDH, serverPub *[]byte) error {
 	pub, shared := s.shareSecret(UnmarshalPoint(s.suite, clientDH.Public))
 	mask := MarshalPoint(shared)
-	var rand abstract.Cipher
 	for r := 0; r < MaxRounds; r++ {
 		if r == 0 {
-			rand = s.suite.Cipher(mask)
+			sha3.ShakeSum256(s.maskss[r][clientDH.Id], mask)
 		} else {
-			rand = s.suite.Cipher(s.maskss[r-1][clientDH.Id])
+			sha3.ShakeSum256(s.maskss[r][clientDH.Id], s.maskss[r-1][clientDH.Id])
 		}
-		rand.Read(s.maskss[r][clientDH.Id])
 	}
 	*serverPub = MarshalPoint(pub)
 	return nil
@@ -714,14 +712,12 @@ func (s *Server) ShareMask(clientDH *ClientDH, serverPub *[]byte) error {
 func (s *Server) ShareSecret(clientDH *ClientDH, serverPub *[]byte) error {
 	pub, shared := s.shareSecret(UnmarshalPoint(s.suite, clientDH.Public))
 	secret := MarshalPoint(shared)
-	var rand abstract.Cipher
 	for r := 0; r < MaxRounds; r++ {
 		if r == 0 {
-			rand = s.suite.Cipher(secret)
+			sha3.ShakeSum256(s.secretss[r][clientDH.Id], secret)
 		} else {
-			rand = s.suite.Cipher(s.secretss[r-1][clientDH.Id])
+			sha3.ShakeSum256(s.secretss[r][clientDH.Id], s.secretss[r-1][clientDH.Id])
 		}
-		rand.Read(s.secretss[r][clientDH.Id])
 	}
 	//s.secretss[clientDH.Id] = make([]byte, len(MarshalPoint(shared)))
 	*serverPub = MarshalPoint(pub)
@@ -741,7 +737,6 @@ func (s *Server) PutAuxProof(aux *AuxKeyProof, _ *int) error {
 
 func (s *Server) ShareServerKeys(ik *InternalKey, correct *bool) error {
 	aux := <-s.auxProofChan[ik.SId]
-	//fmt.Println(s.id, "aux")
 	good := s.verifyShuffle(*ik, aux)
 
 	if ik.SId != len(s.servers) - 1 {
@@ -834,7 +829,6 @@ func (s *Server) UploadBlock(block *Block, _ *int) error {
 func (s *Server) UploadBlock2(block *Block, _*int) error {
 	round := block.Round % MaxRounds
 	s.rounds[round].ublockChan2[block.Id] <- *block
-	//fmt.Println("put ublockchan2", round)
 	return nil
 }
 
@@ -848,13 +842,15 @@ func (s *Server) PutPlainBlocks(bs *[]Block, _ *int) error {
 		s.rounds[round].upHashes[i] = h.Sum(nil)
 	}
 
-	for i := range s.rounds[round].upHashesRdy {
-		if s.clientMap[i] != s.id {
-			continue
+	if s.fsMode {
+		for i := range s.rounds[round].upHashesRdy {
+			if s.clientMap[i] != s.id {
+				continue
+			}
+			go func(i int, round uint64) {
+				s.rounds[round].upHashesRdy[i] <- true
+			} (i, round)
 		}
-		go func(i int, round uint64) {
-			s.rounds[round].upHashesRdy[i] <- true
-		} (i, round)
 	}
 
 	s.rounds[round].dblocksChan <- blocks
@@ -892,21 +888,30 @@ func (s *Server) GetResponse(cmask ClientMask, response *[]byte) error {
 			go func(i int, cmask ClientMask) {
 				defer wg.Done()
 				curBlock := <-s.rounds[round].xorsChan[i][cmask.Id]
-				//fmt.Println(s.id, "mask for", cmask.Id, cmask.Mask)
 				otherBlocks[i] = curBlock.Block
 			} (i, cmask)
 		}
 	}
 	wg.Wait()
 	<-s.rounds[round].blocksRdy[cmask.Id]
-	if cmask.Id == 0 {
+	if cmask.Id == 0 && profile {
 		fmt.Println(cmask.Id, "down_network:", time.Since(t))
 	}
-
 	r := ComputeResponse(s.rounds[round].allBlocks, cmask.Mask, s.secretss[round][cmask.Id])
 	sha3.ShakeSum256(s.secretss[round][cmask.Id], s.secretss[round][cmask.Id])
 	Xor(Xors(otherBlocks), r)
 	*response = r
+	return nil
+}
+
+func (s *Server) GetAllResponses(args *RequestArg, responses *[][]byte) error {
+	round := args.Round % MaxRounds
+	<-s.rounds[round].blocksRdy[args.Id]
+	resps := make([][]byte, s.totalClients)
+	for i := range s.rounds[round].allBlocks {
+		resps[i] = s.rounds[round].allBlocks[i].Block
+	}
+	*responses = resps
 	return nil
 }
 
@@ -1027,6 +1032,7 @@ func main() {
 	var id *int = flag.Int("i", 0, "id [num]")
 	var servers *string = flag.String("s", "", "servers [file]")
 	var numClients *int = flag.Int("n", 0, "num clients [num]")
+	var mode *string = flag.String("m", "", "mode [m for microblogging|f for file sharing]")
 	flag.Parse()
 
 	if *cpuprofile != "" {
@@ -1042,7 +1048,7 @@ func main() {
 
 	SetTotalClients(*numClients)
 
-	s := NewServer(ss[*id], ServerPort + *id, *id, ss)
+	s := NewServer(ss[*id], ServerPort + *id, *id, ss, *mode == "f")
 
 	if *memprofile != "" {
                 f, err := os.Create(*memprofile)

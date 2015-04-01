@@ -23,14 +23,14 @@ var clients []*Client = nil
 
 var ServerAddrs []string = []string{"127.0.0.1:8000", "127.0.0.1:8001"}
 var Suite = edwards.NewAES128SHA256Ed25519(false)
-const NumClients = 5
-const NumServers = 3
+const NumClients = 3
+const NumServers = 2
 
 func TestSetup(t *testing.T) {
 	//nothing goes on here
 }
 
-func TestRounds(t *testing.T) {
+func TestFileShare(t *testing.T) {
 	b := 10
 
 	testData := make([][][]byte, b)
@@ -96,6 +96,57 @@ func TestRounds(t *testing.T) {
 						fmt.Println("test: ", testData[i])
 						log.Fatal("Didn't get all data back")
 					}
+				}
+			} (c)
+
+			wg2.Wait()
+		} (c)
+	}
+	wg.Wait()
+}
+
+func TestMicroblog(t *testing.T) {
+	b := 10
+
+	testData := make([][][]byte, b)
+	for i := 0; i < b; i++ {
+		testData[i] = make([][]byte, NumClients)
+		for j := range testData[i] {
+			data := make([]byte, BlockSize)
+			rand.Read(data)
+			//data[j] = 1
+			// if i == 0 {
+			// 	fmt.Println("block:", data)
+			// }
+			testData[i][j] = data
+		}
+	}
+
+	var wg sync.WaitGroup
+	for c := range clients {
+		wg.Add(1)
+		go func(c int) { //a client
+			defer wg.Done()
+			var wg2 sync.WaitGroup
+
+			wg2.Add(1)
+			go func(c int) {
+				defer wg2.Done()
+				for i := 0; i < b; i++ {
+					client := clients[c]
+					client.UploadBlock(Block{Block: testData[i][c], Round: uint64(i), Id: client.Id()})
+					// if clients[c].Id() == 0 {
+					// 	fmt.Println("uploaded: ", i)
+					// }
+				}
+			} (c)
+
+
+			wg2.Add(1)
+			go func(c int) {
+				defer wg2.Done()
+				for i := 0; i < b; i++ {
+					clients[c].DownloadAll()
 				}
 			} (c)
 

@@ -32,7 +32,7 @@ func setup(numServers int, numClients int) ([]*Server, []*Client) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			s := NewServer(ss[i], 8000+i, i, ss)
+			s := NewServer(ss[i], 8000+i, i, ss, false)
 			servers[i] = s
 			_ = s.MainLoop(0, nil)
 		} (i)
@@ -44,7 +44,7 @@ func setup(numServers int, numClients int) ([]*Server, []*Client) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			c := NewClient(ss, ServerAddrs[i%len(ServerAddrs)])
+			c := NewClient(ss, ServerAddrs[i%len(ServerAddrs)], false)
 			clients[i] = c
 			c.Register(0)
 			c.RegisterDone(0)

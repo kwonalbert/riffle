@@ -3,16 +3,17 @@ package lib
 import (
 	"bufio"
 	"bytes"
+	"crypto/rand"
 	"errors"
-	//"fmt"
+	"fmt"
 	"io/ioutil"
 	"log"
+	"math/big"
 	"sync"
 	"time"
 	"os"
 
 	"github.com/dedis/crypto/abstract"
-	"github.com/dedis/crypto/cipher"
 	"github.com/dedis/crypto/random"
 )
 
@@ -66,15 +67,17 @@ func ReverseMap(m map[int]int) map[int][]int {
 	return res
 }
 
-func GeneratePI(size int, rand cipher.Stream) []int {
+func GeneratePI(size int) []int {
 	// Pick a random permutation
 	pi := make([]int, size)
 	for i := 0; i < size; i++ {	// Initialize a trivial permutation
 		pi[i] = i
 	}
 	for i := size-1; i > 0; i-- {	// Shuffle by random swaps
-		j := int(random.Uint64(rand) % uint64(i+1))
-		if j != i {
+		max := big.NewInt(int64(i+1))
+		jBig, _ := rand.Int(rand.Reader, max)
+		j := jBig.Int64()
+		if j != int64(i) {
 			t := pi[j]
 			pi[j] = pi[i]
 			pi[i] = t
@@ -183,7 +186,7 @@ func SliceEquals(X, Y []byte) bool {
 
 func TimeTrack(start time.Time, name string) {
 	elapsed := time.Since(start)
-	log.Printf("%s took %s", name, elapsed)
+	fmt.Println(name, " took ", elapsed)
 }
 
 func NewDesc(path string) (map[string]int64, error) {
