@@ -1,5 +1,5 @@
-//package server
-package main
+package server
+//package main
 
 import (
 	"encoding/binary"
@@ -45,7 +45,7 @@ type Server struct {
 	running         chan bool
 	secretLock      *sync.Mutex
 
-	fsMode          bool //true for microblogging, false for file sharing
+	FSMode          bool //true for microblogging, false for file sharing
 
 	//crypto
 	suite           abstract.Suite
@@ -105,7 +105,7 @@ type Round struct {
 //Initial Setup
 //////////////////////////////
 
-func NewServer(addr string, port int, id int, servers []string, fsMode bool) *Server {
+func NewServer(addr string, port int, id int, servers []string, FSMode bool) *Server {
 	suite := edwards.NewAES128SHA256Ed25519(false)
 	rand := suite.Cipher(abstract.RandomKey)
 	sk := suite.Secret().Pick(rand)
@@ -173,7 +173,7 @@ func NewServer(addr string, port int, id int, servers []string, fsMode bool) *Se
 
 		rounds:         rounds,
 
-		fsMode:         fsMode,
+		FSMode:         FSMode,
 
 		memProf:        nil,
 	}
@@ -273,7 +273,7 @@ func (s *Server) handleResponses(round uint64) {
 	//store it on this server as well
 	s.rounds[rnd].allBlocks = allBlocks
 
-	if s.fsMode {
+	if s.FSMode {
 		t := time.Now()
 
 		var wg sync.WaitGroup
@@ -772,14 +772,17 @@ func (s *Server) KeyReady(id int, _ *int) error {
 /////////////////////////////////
 //Request
 ////////////////////////////////
-func (s *Server) RequestBlock(r *Request, _ *int) error {
-	err := s.rpcServers[0].Call("Server.RequestBlock2", r, nil)
+func (s *Server) RequestBlock(req *Request, hashes *[][]byte) error {
+	round := req.Round % MaxRounds
+	err := s.rpcServers[0].Call("Server.RequestBlock2", req, nil)
+	<-s.rounds[round].reqHashesRdy[req.Id]
+	*hashes = s.rounds[round].reqHashes
 	return err
 }
 
-func (s *Server) RequestBlock2(r *Request, _ *int) error {
-	round := r.Round % MaxRounds
-	s.rounds[round].reqChan2[r.Id] <- *r
+func (s *Server) RequestBlock2(req *Request, _ *int) error {
+	round := req.Round % MaxRounds
+	s.rounds[round].reqChan2[req.Id] <- *req
 	return nil
 }
 
@@ -802,13 +805,6 @@ func (s *Server) PutPlainRequests(rs *[]Request, _ *int) error {
 	return nil
 }
 
-func (s *Server) GetReqHashes(args *RequestArg, hashes *[][]byte) error {
-	round := args.Round % MaxRounds
-	<-s.rounds[round].reqHashesRdy[args.Id]
-	*hashes = s.rounds[round].reqHashes
-	return nil
-}
-
 func (s *Server) ShareServerRequests(reqs *[]Request, _ *int) error {
 	round := (*reqs)[0].Round % MaxRounds
 	s.rounds[round].requestsChan <- *reqs
@@ -818,7 +814,24 @@ func (s *Server) ShareServerRequests(reqs *[]Request, _ *int) error {
 /////////////////////////////////
 //Upload
 ////////////////////////////////
-func (s *Server) UploadBlock(block *Block, _ *int) error {
+func (s *Server) UploadBlock(block *Block, hashes *[][]byte) error {
+	round := block.Round % MaxRounds
+	err := s.rpcServers[0].Call("Server.UploadBlock2", block, nil)
+	if err != nil {
+		log.Fatal("Couldn't send block to first server: ", err)
+	}
+	<-s.rounds[round].upHashesRdy[block.Id]
+	*hashes = s.rounds[round].upHashes
+	return nil
+}
+
+func (s *Server) UploadBlock2(block *Block, _ *int) error {
+	round := block.Round % MaxRounds
+	s.rounds[round].ublockChan2[block.Id] <- *block
+	return nil
+}
+
+func (s *Server) UploadSmall(block *Block, _ *int) error {
 	err := s.rpcServers[0].Call("Server.UploadBlock2", block, nil)
 	if err != nil {
 		log.Fatal("Couldn't send block to first server: ", err)
@@ -826,7 +839,7 @@ func (s *Server) UploadBlock(block *Block, _ *int) error {
 	return nil
 }
 
-func (s *Server) UploadBlock2(block *Block, _*int) error {
+func (s *Server) UploadSmall2(block *Block, _ *int) error {
 	round := block.Round % MaxRounds
 	s.rounds[round].ublockChan2[block.Id] <- *block
 	return nil
@@ -842,7 +855,7 @@ func (s *Server) PutPlainBlocks(bs *[]Block, _ *int) error {
 		s.rounds[round].upHashes[i] = h.Sum(nil)
 	}
 
-	if s.fsMode {
+	if s.FSMode {
 		for i := range s.rounds[round].upHashesRdy {
 			if s.clientMap[i] != s.id {
 				continue
@@ -868,13 +881,6 @@ func (s *Server) ShareServerBlocks(blocks *[]Block, _ *int) error {
 /////////////////////////////////
 //Download
 ////////////////////////////////
-func (s *Server) GetUpHashes(args *RequestArg, hashes *[][]byte) error {
-	round := args.Round % MaxRounds
-	<-s.rounds[round].upHashesRdy[args.Id]
-	*hashes = s.rounds[round].upHashes
-	return nil
-}
-
 func (s *Server) GetResponse(cmask ClientMask, response *[]byte) error {
 	t := time.Now()
 	round := cmask.Round % MaxRounds
@@ -976,7 +982,6 @@ func (s *Server) shuffle(input [][]byte, round uint64) {
 	nonce := [24]byte{}
 	binary.PutUvarint(tmp, round)
 	copy(nonce[:], tmp[:])
-
 	var aesWG sync.WaitGroup
 	for i := 0; i < s.totalClients; i++ {
 		aesWG.Add(1)
@@ -987,7 +992,7 @@ func (s *Server) shuffle(input [][]byte, round uint64) {
 			var good bool
 			input[i], good = secretbox.Open(nil, input[i], &nonce, &key)
 			if !good {
-				log.Fatal(round, "Check failed:", s.id, i)
+				log.Fatal(round, " check failed:", s.id, i)
 			}
 		} (i)
 	}

@@ -6,6 +6,6 @@ const HashSize = 32
 const BlockSize = 160
 const SecretSize = 256/8
 
-const MaxRounds = 20
+const MaxRounds = 2
 
 const ServerPort = 8000

@@ -1,5 +1,5 @@
-//package client
-package main
+package client
+//package main
 
 import (
 	"crypto/rand"
@@ -32,7 +32,7 @@ type Client struct {
 	myServer        int //server downloading from (using PIR)
 	totalClients    int
 
-	fsMode          bool //true for microblogging, false for file sharing
+	FSMode          bool //true for microblogging, false for file sharing
 
 	files           map[string]*File //files in hand; filename to hashes
 	osFiles         map[string]*os.File
@@ -44,16 +44,6 @@ type Client struct {
 	g               abstract.Group
 	pks             []abstract.Point //server public keys
 
-	reqRound        uint64
-	reqHashRound    uint64
-	upRound         uint64
-	downRound       uint64
-
-	reqLock         *sync.Mutex
-	reqHashLock     *sync.Mutex
-	upLock          *sync.Mutex
-	downLock        *sync.Mutex
-
 	keys            [][]byte
 	ephKeys         []abstract.Point
 
@@ -61,9 +51,21 @@ type Client struct {
 	dhashes         chan []byte //hash to download (per round)
 	maskss          [][][]byte //masks used
 	secretss        [][][]byte //secret for data
+
+	rounds          []*Round
 }
 
-func NewClient(servers []string, myServer string, fsMode bool) *Client {
+type Round struct {
+	reqLock         *sync.Mutex
+	upLock          *sync.Mutex
+	downLock        *sync.Mutex
+
+	reqHashesChan   chan [][]byte
+	dhashChan       chan []byte
+	upHashesChan    chan [][]byte
+}
+
+func NewClient(servers []string, myServer string, FSMode bool) *Client {
 	suite := edwards.NewAES128SHA256Ed25519(false)
 
 	myServerIdx := -1
@@ -95,6 +97,21 @@ func NewClient(servers []string, myServer string, fsMode bool) *Client {
 	}
 	wg.Wait()
 
+	rounds := make([]*Round, MaxRounds)
+
+	for i := range rounds {
+		r := Round{
+			reqLock:        new(sync.Mutex),
+			upLock:         new(sync.Mutex),
+			downLock:       new(sync.Mutex),
+
+			reqHashesChan:  make(chan [][]byte),
+			dhashChan:      make(chan []byte),
+			upHashesChan:   make(chan [][]byte),
+		}
+		rounds[i] = &r
+	}
+
 	//id comes from servers
 	c := Client {
 		id:             -1,
@@ -103,7 +120,7 @@ func NewClient(servers []string, myServer string, fsMode bool) *Client {
 		myServer:       myServerIdx,
 		totalClients:   -1,
 
-		fsMode:         fsMode,
+		FSMode:         FSMode,
 
 		files:          make(map[string]*File),
 		osFiles:        make(map[string]*os.File),
@@ -114,30 +131,22 @@ func NewClient(servers []string, myServer string, fsMode bool) *Client {
 		g:              suite,
 		pks:            pks,
 
-		reqRound:       0,
-		reqHashRound:   0,
-		upRound:        0,
-		downRound:      0,
-
-		reqLock:        new(sync.Mutex),
-		reqHashLock:    new(sync.Mutex),
-		upLock:         new(sync.Mutex),
-		downLock:       new(sync.Mutex),
-
 		keys:           make([][]byte, len(servers)),
 		ephKeys:        make([]abstract.Point, len(servers)),
 
 		dhashes:        make(chan []byte, MaxRounds),
 		maskss:         nil,
 		secretss:       nil,
+
+		rounds:         rounds,
 	}
 
 	return &c
 }
+
 /////////////////////////////////
 //Registration and Setup
 ////////////////////////////////
-
 func (c *Client) Register(idx int) {
 	var id int
 	err := c.rpcServers[idx].Call("Server.Register", c.myServer, &id)
@@ -283,58 +292,31 @@ func (c *Client) ShareSecret() {
 /////////////////////////////////
 //Request
 ////////////////////////////////
-func (c *Client) RequestBlock(slot int, hash []byte) {
+func (c *Client) RequestBlock(hash []byte, rnd uint64) ([]byte, [][]byte) {
 	t := time.Now()
-	c.reqLock.Lock()
 
-	req := Request{Hash: c.seal(hash, c.reqRound), Round: c.reqRound, Id: c.id}
-	c.dhashes <- hash
+	req := Request{Hash: c.seal(hash, rnd), Round: rnd, Id: c.id}
 
-	if c.id == 0 && debug {
-		fmt.Println(c.id, c.reqRound, "requesting", hash)
+	if rnd == 0 && debug {
+		fmt.Println(c.id, rnd, "requesting", req.Hash)
 	}
 
 	t = time.Now()
-	//TODO: xor in some secrets
-	err := c.rpcServers[c.myServer].Call("Server.RequestBlock", &req, nil)
+	var hashes [][]byte
+	err := c.rpcServers[c.myServer].Call("Server.RequestBlock", &req, &hashes)
 	if err != nil {
 		log.Fatal("Couldn't request a block: ", err)
 	}
 	if c.id == 0 && profile {
 		fmt.Println(c.id, "req_network:", time.Since(t))
 	}
-	c.reqRound++
-	c.reqLock.Unlock()
+	return hash, hashes
 }
 
 /////////////////////////////////
 //Upload
 ////////////////////////////////
-func (c *Client) DownloadReqHash() [][]byte {
-	c.reqHashLock.Lock()
-	var hashes [][]byte
-	args := RequestArg{Id: c.id, Round: c.reqHashRound}
-	t := time.Now()
-	err := c.rpcServers[c.myServer].Call("Server.GetReqHashes", &args, &hashes)
-	if err != nil {
-		log.Fatal("Couldn't download req hashes: ", err)
-	}
-	if c.id == 0 && profile {
-		fmt.Println(c.id, "downreqs_network:", time.Since(t))
-	}
-	if c.id == 0 && debug {
-		fmt.Println(c.reqHashRound, "all reqs", hashes)
-	}
-
-	c.reqHashRound++
-	c.reqHashLock.Unlock()
-	return hashes
-}
-
-func (c *Client) Upload() {
-	//okay to lock; bandwidth is still near maximized
-	c.upLock.Lock()
-	hashes := c.DownloadReqHash()
+func (c *Client) Upload(hashes [][]byte, rnd uint64) [][]byte {
 	match := []byte{}
 	var name string
 	var offset int64 = -1
@@ -367,78 +349,70 @@ func (c *Client) Upload() {
 	if c.id == 0 && profile {
 		fmt.Println(c.id, "file_read:", time.Since(t))
 	}
-	c.UploadBlock(Block{Block: match, Round: c.upRound, Id: c.id})
-	c.upLock.Unlock()
+	return c.UploadBlock(Block{Block: match, Round: rnd, Id: c.id})
 }
 
-func (c *Client) UploadBlock(block Block) {
-	block.Block = c.seal(block.Block, c.upRound)
+func (c *Client) UploadBlock(block Block) [][]byte {
+	block.Block = c.seal(block.Block, block.Round)
 
+	var hashes [][]byte
 	t := time.Now()
-	err := c.rpcServers[c.myServer].Call("Server.UploadBlock", &block, nil)
+	err := c.rpcServers[c.myServer].Call("Server.UploadBlock", &block, &hashes)
 	if err != nil {
 		log.Fatal("Couldn't upload a block: ", err)
 	}
 	if c.id == 0 && profile {
 		fmt.Println(c.id, "up_network:", time.Since(t))
 	}
-	c.upRound++
+	return hashes
+}
+
+func (c *Client) UploadSmall(block Block) {
+	block.Block = c.seal(block.Block, block.Round)
+	err := c.rpcServers[c.myServer].Call("Server.UploadSmall", &block, nil)
+	if err != nil {
+		log.Fatal("Couldn't upload a block: ", err)
+	}
 }
 
 
 /////////////////////////////////
 //Download
 ////////////////////////////////
-func (c *Client) Download() []byte {
-	c.downLock.Lock()
-	hash := <-c.dhashes
-	block := c.DownloadBlock(hash)
-	c.downRound++
-	c.downLock.Unlock()
+func (c *Client) Download(hash []byte, hashes [][]byte, rnd uint64) []byte {
+	round := rnd % MaxRounds
+	c.rounds[round].downLock.Lock()
+	block := c.DownloadBlock(hash, hashes, rnd)
+	c.rounds[round].downLock.Unlock()
 	return block
 }
 
-func (c *Client) DownloadAll() [][]byte {
-	c.downLock.Lock()
-	args := RequestArg{Id: c.id, Round: c.downRound}
+func (c *Client) DownloadAll(rnd uint64) [][]byte {
+	round := rnd % MaxRounds
+	c.rounds[round].downLock.Lock()
+	args := RequestArg{Id: c.id, Round: rnd}
 	resps := make([][]byte, c.totalClients)
 	err := c.rpcServers[c.myServer].Call("Server.GetAllResponses", &args, &resps)
 	if err != nil {
 		log.Fatal("Couldn't download up hashes: ", err)
 	}
-	c.downRound++
-	c.downLock.Unlock()
+	c.rounds[round].downLock.Unlock()
 	return resps
 }
 
-func (c *Client) DownloadBlock(hash []byte) []byte {
-	var hashes [][]byte
-	args := RequestArg{Id: c.id, Round: c.downRound}
-	t := time.Now()
-	err := c.rpcServers[c.myServer].Call("Server.GetUpHashes", &args, &hashes)
-	if err != nil {
-		log.Fatal("Couldn't download up hashes: ", err)
-	}
-	if c.id == 0 && profile {
-		fmt.Println(c.id, "getuphash_network:", time.Since(t))
-	}
-
-	if c.id == 0 && debug {
-		fmt.Println(c.id, c.downRound, "down hashes", hash, hashes)
-	}
-
+func (c *Client) DownloadBlock(hash []byte, hashes [][]byte, rnd uint64) []byte {
 	idx := Membership(hash, hashes)
 
 	if idx == -1 {
-		return c.DownloadSlot(0)
+		return c.DownloadSlot(0, rnd)
 	} else {
-		return c.DownloadSlot(idx)
+		return c.DownloadSlot(idx, rnd)
 	}
 }
 
-func (c *Client) DownloadSlot(slot int) []byte {
+func (c *Client) DownloadSlot(slot int, rnd uint64) []byte {
 	//all but one server uses the prng technique
-	round := c.downRound % MaxRounds
+	round := rnd % MaxRounds
 	maskSize := len(c.maskss[round][0])
 	finalMask := make([]byte, maskSize)
 	SetBit(slot, true, finalMask)
@@ -449,7 +423,7 @@ func (c *Client) DownloadSlot(slot int) []byte {
 	//one response includes all the secrets
 	response := make([]byte, BlockSize)
 	secretsXor := Xors(c.secretss[round])
-	cMask := ClientMask {Mask: mask, Id: c.id, Round: c.downRound}
+	cMask := ClientMask {Mask: mask, Id: c.id, Round: rnd}
 
 	t := time.Now()
 	err := c.rpcServers[c.myServer].Call("Server.GetResponse", cMask, &response)
@@ -500,9 +474,9 @@ func (c *Client) RegisterBlock(block []byte) {
 	c.testPieces[string(hash)] = block
 }
 
-func (c *Client) UploadPieces() {
-	c.upLock.Lock()
-	hashes := c.DownloadReqHash()
+func (c *Client) UploadPieces(hashes [][]byte, rnd uint64) {
+	round := rnd % MaxRounds
+	c.rounds[round].upLock.Lock()
 	match := []byte{}
 	for _, h := range hashes {
 		if len(c.testPieces[string(h)]) == 0 {
@@ -514,7 +488,7 @@ func (c *Client) UploadPieces() {
 
 	h := c.suite.Hash()
 	h.Write(match)
-	if c.upRound == 0 && debug {
+	if rnd == 0 && debug {
 		fmt.Println(c.id, "uploading", match, h.Sum(nil))
 	}
 
@@ -524,9 +498,8 @@ func (c *Client) UploadPieces() {
 		fmt.Println(c.id, "unfound", hashes)
 	}
 
-	c.UploadBlock(Block{Block: match, Round: c.upRound, Id: c.id})
-	c.upRound++
-	c.upLock.Unlock()
+	c.UploadBlock(Block{Block: match, Round: rnd, Id: c.id})
+	c.rounds[round].upLock.Unlock()
 }
 
 func (c *Client) Id() int {
@@ -543,10 +516,6 @@ func (c *Client) Secrets() [][][]byte {
 
 func (c *Client) Keys() [][]byte {
 	return c.keys
-}
-
-func (c *Client) ClearHashes() {
-	c.rpcServers[c.myServer].Call("Server.GetUpHashes", c.id, nil)
 }
 
 /////////////////////////////////
@@ -574,7 +543,8 @@ func main() {
 		defer TimeTrack(time.Now(), "total time:")
 	}
 
-	if c.fsMode {
+	var wg sync.WaitGroup
+	if c.FSMode {
 		file, err := NewFile(c.suite, *f)
 		if err != nil {
 			log.Fatal("Failed reading the file in hand", err)
@@ -593,63 +563,42 @@ func main() {
 		// 	log.Fatal("Failed creating dest file", err)
 		// }
 
-		var wg sync.WaitGroup
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for k, _ := range wanted {
-				c.RequestBlock(c.id, []byte(k))
-				//fmt.Println(c.id, "Requested", c.reqRound)
-			}
-		} ()
+		wantedArr := make([][]byte, len(wanted) + (len(wanted) % MaxRounds))
+		i := 0
+		for k, _ := range wanted {
+			wantedArr[i] = []byte(k)
+			i++
+		}
 
-		//wg.Add(1)
-		go func() {
-		//defer wg.Done()
-			for {
-				c.Upload()
-				//fmt.Println(c.id, "Uploaded", c.upRound)
-			}
-		} ()
-
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for _, _ = range wanted {
-				c.Download()
-				// h := c.suite.Hash()
-				// h.Write(res)
-				// hash := h.Sum(nil)
-				// _ = wanted[string(hash)]
-				//nf.WriteAt(res, offset)
-				if c.id == 0 {
-					fmt.Println(c.id, "Downloaded", c.downRound)
+		var r uint64 = 0
+		for ; r < MaxRounds; r++ {
+			wg.Add(1)
+			go func (r uint64) {
+				defer wg.Done()
+				for ; r < uint64(len(wantedArr)); {
+					hash, hashes := c.RequestBlock(wantedArr[r], r)
+					hashes = c.Upload(hashes, r)
+					c.Download(hash, hashes, r)
+					r += MaxRounds
 				}
-			}
-		}()
-
+			} (r)
+		}
 		wg.Wait()
 	} else {
-		var wg sync.WaitGroup
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := 0; i < 40; i++ {
-				block := make([]byte, BlockSize)
-				rand.Read(block)
-				c.UploadBlock(Block{Block: block, Round: c.upRound, Id: c.id})
-			}
-		} ()
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := 0; i < 40; i++ {
-				c.DownloadAll()
-				if c.id == 0 && (c.downRound % 10 == 0) {
-					fmt.Println(c.id, "Downloaded", c.downRound)
+		var r uint64 = 0
+		for ; r < MaxRounds; r++ {
+			wg.Add(1)
+			go func (r uint64) {
+				defer wg.Done()
+				for ; r < MaxRounds*3; {
+					block := make([]byte, BlockSize)
+					rand.Read(block)
+					c.UploadSmall(Block{Block: block, Round: r, Id: c.id})
+					c.DownloadAll(r)
+					r += MaxRounds
 				}
-			}
-		} ()
+			} (r)
+		}
 		wg.Wait()
 	}
 }

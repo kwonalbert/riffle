@@ -5,14 +5,14 @@ import (
 	"log"
 	"sync"
 
-	. "afs/server"
-	. "afs/client"
-	. "afs/lib"
+	"afs/server"
+	"afs/client"
+	"afs/lib"
 )
 
-func setup(numServers int, numClients int) ([]*Server, []*Client) {
+func setup(numServers int, numClients int) ([]*server.Server, []*client.Client) {
 	fmt.Println(fmt.Sprintf("Setting up for %d servers and %d clients", numServers, numClients))
-	SetTotalClients(numClients)
+	server.SetTotalClients(numClients)
 
 	ss := make([]string, numServers)
 	cs := make([]string, numClients)
@@ -23,8 +23,8 @@ func setup(numServers int, numClients int) ([]*Server, []*Client) {
 		cs[i] = fmt.Sprintf("127.0.0.1:%d", 9000+i)
 	}
 
-	servers := make([]*Server, numServers)
-	clients := make([]*Client, numClients)
+	servers := make([]*server.Server, numServers)
+	clients := make([]*client.Client, numClients)
 
 	fmt.Println("Starting servers")
 	var wg sync.WaitGroup
@@ -32,7 +32,7 @@ func setup(numServers int, numClients int) ([]*Server, []*Client) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			s := NewServer(ss[i], 8000+i, i, ss, false)
+			s := server.NewServer(ss[i], 8000+i, i, ss, false)
 			servers[i] = s
 			_ = s.MainLoop(0, nil)
 		} (i)
@@ -44,7 +44,7 @@ func setup(numServers int, numClients int) ([]*Server, []*Client) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			c := NewClient(ss, ServerAddrs[i%len(ServerAddrs)], false)
+			c := client.NewClient(ss, ServerAddrs[i%len(ServerAddrs)], false)
 			clients[i] = c
 			c.Register(0)
 			c.RegisterDone(0)
@@ -59,8 +59,8 @@ func setup(numServers int, numClients int) ([]*Server, []*Client) {
 	for i, s := range servers {
 		masks := s.Masks()
 		secrets := s.Secrets()
-		cmasks := make([][][]byte, MaxRounds)
-		csecrets := make([][][]byte, MaxRounds)
+		cmasks := make([][][]byte, lib.MaxRounds)
+		csecrets := make([][][]byte, lib.MaxRounds)
 		for r := range masks {
 			cmasks[r] = make([][]byte, NumClients)
 			csecrets[r] = make([][]byte, NumClients)
@@ -91,7 +91,7 @@ func setup(numServers int, numClients int) ([]*Server, []*Client) {
 		ckeys := c.Keys()
 		for j := range ckeys {
 			//server k's key
-			if Membership(ckeys[j], skeyss[j]) == -1 {
+			if lib.Membership(ckeys[j], skeyss[j]) == -1 {
 				log.Fatal("Key share failed!")
 			}
 			shared[i][j] = true
@@ -129,95 +129,3 @@ func registerBlocks(testData [][]byte) {
 
 }
 
-func request(testData [][]byte, offset int) {
-	n := len(clients)
-	var wg sync.WaitGroup
-	for i, c := range clients {
-		wg.Add(1)
-		go func(i int, c *Client) {
-			defer wg.Done()
-			c.RequestBlock(i, Suite.Hash().Sum(testData[(i+offset)%n]))
-		} (i, c)
-	}
-	wg.Wait()
-}
-
-func upload() {
-	for _, c := range clients {
-		go c.Upload()
-	}
-}
-
-func download(testData [][]byte) {
-	//upload blocks
-	res := make([][]byte, NumClients)
-	var wg sync.WaitGroup
-	for i, c := range clients {
-		wg.Add(1)
-		go func(i int, c *Client) {
-			defer wg.Done()
-			res[i] = c.Download()
-		} (i, c)
-	}
-	wg.Wait()
-
-	found := make([]bool, NumClients)
-	for i := range found {
-		found[i] = false
-	}
-
-	for i := range testData {
-		found[i] = false
-		for j := range res {
-			same := true
-			same = same && (len(res[j]) == len(testData[i]))
-			for k := range res[j] {
-				same = same && (testData[i][k] == res[j][k])
-			}
-			if same {
-				found[i] = true
-				break
-			}
-		}
-		if !found[i] {
-			log.Fatal("Didn't get all the data back")
-		}
-	}
-}
-
-func downloadBlock(testData [][]byte) {
-	//upload blocks
-	res := make([][]byte, NumClients)
-	var wg sync.WaitGroup
-	for i, c := range clients {
-		wg.Add(1)
-		go func(i int, c *Client) {
-			defer wg.Done()
-			res[i] = c.DownloadBlock(Suite.Hash().Sum(testData[i]))
-		} (i, c)
-	}
-	wg.Wait()
-
-	found := make([]bool, NumClients)
-	for i := range found {
-		found[i] = false
-	}
-
-	for i := range testData {
-		found[i] = false
-		for j := range res {
-			same := true
-			same = same && (len(res[j]) == len(testData[i]))
-			for k := range res[j] {
-				same = same && (testData[i][k] == res[j][k])
-			}
-			if same {
-				found[i] = true
-				break
-			}
-		}
-		if !found[i] {
-			log.Fatal("Didn't get all the data back")
-		}
-	}
-}
