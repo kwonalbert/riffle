@@ -33,8 +33,8 @@ var debug = false
 
 //any variable/func with 2: similar object as s-c but only s-s
 type Server struct {
-	addr            string //this server
-	port            int
+	port1           int
+	port2           int
 	id              int
 	servers         []string //other servers
 	rpcServers      []*rpc.Client
@@ -105,7 +105,7 @@ type Round struct {
 //Initial Setup
 //////////////////////////////
 
-func NewServer(addr string, port int, id int, servers []string, FSMode bool) *Server {
+func NewServer(port1 int, port2 int, id int, servers []string, FSMode bool) *Server {
 	suite := edwards.NewAES128SHA256Ed25519(false)
 	rand := suite.Cipher(abstract.RandomKey)
 	sk := suite.Secret().Pick(rand)
@@ -137,8 +137,8 @@ func NewServer(addr string, port int, id int, servers []string, FSMode bool) *Se
 	}
 
 	s := Server{
-		addr:           addr,
-		port:           port,
+		port1:          port1,
+		port2:          port2,
 		id:             id,
 		servers:        servers,
 		regLock:        []*sync.Mutex{new(sync.Mutex), new(sync.Mutex)},
@@ -633,7 +633,7 @@ func (s *Server) connectServers() {
 		var err error = errors.New("")
 		for ; err != nil ; {
 			if i == s.id { //make a local rpc
-				addr := fmt.Sprintf("127.0.0.1:%d", s.port)
+				addr := fmt.Sprintf("127.0.0.1:%d", s.port2)
 				rpcServer, err = rpc.Dial("tcp", addr)
 			} else {
 				rpcServer, err = rpc.Dial("tcp", s.servers[i])
@@ -933,17 +933,23 @@ func (s *Server) PutClientBlock(cblock ClientBlock, _ *int) error {
 //Misc
 ////////////////////////////////
 //used for the local test function to start the server
-func (s *Server) MainLoop(_ int, _ *int) error {
-	rpcServer := rpc.NewServer()
-	rpcServer.Register(s)
-	l, err := net.Listen("tcp", s.addr)
+func (s *Server) MainLoop() error {
+	rpcServer1 := rpc.NewServer()
+	rpcServer2 := rpc.NewServer()
+	rpcServer1.Register(s)
+	rpcServer2.Register(s)
+	l1, err := net.Listen("tcp", fmt.Sprintf(":%d", s.port1))
 	if err != nil {
-		panic("Cannot starting listening to the port")
+		log.Fatal("Cannot starting listening to the port: ", err)
 	}
-	go rpcServer.Accept(l)
+	l2, err := net.Listen("tcp", fmt.Sprintf(":%d", s.port2))
+	if err != nil {
+		log.Fatal("Cannot starting listening to the port: ", err)
+	}
+	go rpcServer1.Accept(l1)
+	go rpcServer2.Accept(l2)
 	s.connectServers()
 	go s.runHandlers()
-
 	return nil
 }
 
@@ -1035,6 +1041,8 @@ func main() {
 	var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
 	var memprofile = flag.String("memprofile", "", "write memory profile to this file")
 	var id *int = flag.Int("i", 0, "id [num]")
+	var port1 *int = flag.Int("p1", 8000, "port1 [num]")
+	var port2 *int = flag.Int("p2", 8001, "port2 [num]")
 	var servers *string = flag.String("s", "", "servers [file]")
 	var numClients *int = flag.Int("n", 0, "num clients [num]")
 	var mode *string = flag.String("m", "", "mode [m for microblogging|f for file sharing]")
@@ -1053,7 +1061,7 @@ func main() {
 
 	SetTotalClients(*numClients)
 
-	s := NewServer(ss[*id], ServerPort + *id, *id, ss, *mode == "f")
+	s := NewServer(*port1, *port2, *id, ss, *mode == "f")
 
 	if *memprofile != "" {
                 f, err := os.Create(*memprofile)
@@ -1063,14 +1071,20 @@ func main() {
                 s.memProf = f
         }
 
-	rpcServer := rpc.NewServer()
-	rpcServer.Register(s)
-	l, err := net.Listen("tcp", fmt.Sprintf(":%d", s.port))
+	rpcServer1 := rpc.NewServer()
+	rpcServer2 := rpc.NewServer()
+	rpcServer1.Register(s)
+	rpcServer2.Register(s)
+	l1, err := net.Listen("tcp", fmt.Sprintf(":%d", s.port1))
 	if err != nil {
-		panic("Cannot starting listening to the port")
+		log.Fatal("Cannot starting listening to the port: ", err)
 	}
-
-	go rpcServer.Accept(l)
+	l2, err := net.Listen("tcp", fmt.Sprintf(":%d", s.port2))
+	if err != nil {
+		log.Fatal("Cannot starting listening to the port: ", err)
+	}
+	go rpcServer1.Accept(l1)
+	go rpcServer2.Accept(l2)
 	s.connectServers()
 	fmt.Println("Starting server", *id)
 	s.runHandlers()
