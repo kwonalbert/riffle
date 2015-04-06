@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"net/rpc"
 	"os"
 	"runtime"
 	"runtime/pprof"
@@ -25,6 +24,8 @@ import (
 
 	"golang.org/x/crypto/nacl/secretbox"
 	"golang.org/x/crypto/sha3"
+	"golang.org/x/net/context"
+	"google.golang.org/grpc"
 )
 
 var TotalClients = 0
@@ -33,11 +34,12 @@ var debug = false
 
 //any variable/func with 2: similar object as s-c but only s-s
 type Server struct {
-	addr            string //this server
-	port            int
+	port1           int //client facing
+	port2           int //server facing
 	id              int
-	servers         []string //other servers
-	rpcServers      []*rpc.Client
+	serverAddrs     []string //other servers
+	conns           []*grpc.ClientConn
+	servers         []RiffleInternalClient
 	regLock         []*sync.Mutex //registration mutex
 	regChan         chan bool
 	regDone         chan bool
@@ -54,6 +56,7 @@ type Server struct {
 	pk              abstract.Point
 	pkBin           []byte
 	pks             []abstract.Point //all servers pks
+	pksBin          [][]byte
 	nextPks         []abstract.Point
 	nextPksBin      [][]byte
 	ephSecret       abstract.Secret
@@ -85,7 +88,7 @@ type Round struct {
 
 	//requesting
 	reqChan2        []chan Request
-	requestsChan    chan []Request
+	requestsChan    chan []*Request
 	reqHashes       [][]byte
 	reqHashesRdy    []chan bool
 
@@ -105,7 +108,7 @@ type Round struct {
 //Initial Setup
 //////////////////////////////
 
-func NewServer(addr string, port int, id int, servers []string, FSMode bool) *Server {
+func NewServer(port1 int, port2 int, id int, servers []string, FSMode bool) *Server {
 	suite := edwards.NewAES128SHA256Ed25519(false)
 	rand := suite.Cipher(abstract.RandomKey)
 	sk := suite.Secret().Pick(rand)
@@ -137,10 +140,13 @@ func NewServer(addr string, port int, id int, servers []string, FSMode bool) *Se
 	}
 
 	s := Server{
-		addr:           addr,
-		port:           port,
+		port1:          port1,
+		port2:          port2,
 		id:             id,
-		servers:        servers,
+		serverAddrs:    servers,
+		conns:          make([]*grpc.ClientConn, len(servers)),
+		servers:        make([]RiffleInternalClient, len(servers)),
+
 		regLock:        []*sync.Mutex{new(sync.Mutex), new(sync.Mutex)},
 		regChan:        make(chan bool, TotalClients),
 		regDone:        make(chan bool),
@@ -154,6 +160,7 @@ func NewServer(addr string, port int, id int, servers []string, FSMode bool) *Se
 		pk:             pk,
 		pkBin:          pkBin,
 		pks:            make([]abstract.Point, len(servers)),
+		pksBin:         make([][]byte, len(servers)),
 		nextPks:        make([]abstract.Point, len(servers)),
 		nextPksBin:     make([][]byte, len(servers)),
 		ephSecret:      ephSecret,
@@ -208,7 +215,7 @@ func (s *Server) runHandlers() {
 
 func (s *Server) gatherRequests(round uint64) {
 	rnd := round % MaxRounds
-	allReqs := make([]Request, s.totalClients)
+	allReqs := make([]*Request, s.totalClients)
 	var wg sync.WaitGroup
 	for i := 0; i < s.totalClients; i++ {
 		wg.Add(1)
@@ -216,7 +223,7 @@ func (s *Server) gatherRequests(round uint64) {
 			defer wg.Done()
 			req := <-s.rounds[rnd].reqChan2[i]
 			req.Id = 0
-			allReqs[i] = req
+			allReqs[i] = &req
 		} (i)
 	}
 	wg.Wait()
@@ -236,27 +243,28 @@ func (s *Server) shuffleRequests(round uint64) {
 
 	s.shuffle(input, round)
 
-	reqs := make([]Request, s.totalClients)
+	reqs := make([]*Request, s.totalClients)
 	for i := range reqs {
-		reqs[i] = Request{Hash: input[i], Round: round, Id: 0}
+		reqs[i] = &Request{Hash: input[i], Round: round, Id: 0}
 	}
+	requests := &Requests{Requests: reqs}
 
 	t := time.Now()
 	if s.id == len(s.servers) - 1 {
 		var wg sync.WaitGroup
-		for _, rpcServer := range s.rpcServers {
+		for i := range s.servers {
 			wg.Add(1)
-			go func(rpcServer *rpc.Client) {
+			go func(i int) {
 				defer wg.Done()
-				err := rpcServer.Call("Server.PutPlainRequests", &reqs, nil)
+				_, err := s.servers[i].PutPlainRequests(context.TODO(), requests)
 				if err != nil {
 					log.Fatal("Failed uploading shuffled and decoded reqs: ", err)
 				}
-			} (rpcServer)
+			} (i)
 		}
 		wg.Wait()
 	} else {
-		err := s.rpcServers[s.id+1].Call("Server.ShareServerRequests", &reqs, nil)
+		_, err := s.servers[s.id+1].ShareServerRequests(context.TODO(), requests)
 		if err != nil {
 			log.Fatal("Couldn't hand off the requests to next server", s.id+1, err)
 		}
@@ -283,25 +291,25 @@ func (s *Server) handleResponses(round uint64) {
 			}
 			//if it doesnt belong to me, xor things and send it over
 			wg.Add(1)
-			go func(i int, rpcServer *rpc.Client, r uint64) {
+			go func(i int, r uint64) {
 				defer wg.Done()
 				res := ComputeResponse(allBlocks, s.maskss[r][i], s.secretss[r][i])
 				sha3.ShakeSum256(s.secretss[r][i], s.secretss[r][i])
 				sha3.ShakeSum256(s.maskss[r][i], s.maskss[r][i])
 				//fmt.Println(s.id, round, "mask", i, s.maskss[i])
-				cb := ClientBlock {
-					CId: i,
-					SId: s.id,
-					Block: Block {
+				cb := &ClientBlock {
+					Cid: uint64(i),
+					Sid: uint64(s.id),
+					Block: &Block {
 						Block: res,
 						Round: round,
 					},
 				}
-				err := rpcServer.Call("Server.PutClientBlock", cb, nil)
+				_, err := s.servers[s.clientMap[i]].PutClientBlock(context.TODO(), cb)
 				if err != nil {
 					log.Fatal("Couldn't put block: ", err)
 				}
-			} (i, s.rpcServers[s.clientMap[i]], rnd)
+			} (i, rnd)
 		}
 		wg.Wait()
 
@@ -349,28 +357,29 @@ func (s *Server) shuffleUploads(round uint64) {
 
 	s.shuffle(input, round)
 
-	uploads := make([]Block, s.totalClients)
+	uploads := make([]*Block, s.totalClients)
 	for i := range uploads {
-		uploads[i] = Block{Block: input[i], Round: round, Id: 0}
+		uploads[i] = &Block{Block: input[i], Round: round, Id: 0}
 	}
+	blocks := &Blocks{Blocks: uploads}
 
 	t := time.Now()
 
 	if s.id == len(s.servers) - 1 {
 		var wg sync.WaitGroup
-		for _, rpcServer := range s.rpcServers {
+		for i := range s.servers {
 			wg.Add(1)
-			go func(rpcServer *rpc.Client) {
+			go func(i int) {
 				defer wg.Done()
-				err := rpcServer.Call("Server.PutPlainBlocks", &uploads, nil)
+				_, err := s.servers[i].PutPlainBlocks(context.TODO(), blocks)
 				if err != nil {
 					log.Fatal("Failed uploading shuffled and decoded blocks: ", err)
 				}
-			} (rpcServer)
+			} (i)
 		}
 		wg.Wait()
 	} else {
-		err := s.rpcServers[s.id+1].Call("Server.ShareServerBlocks", &uploads, nil)
+		_, err := s.servers[s.id+1].ShareServerBlocks(context.TODO(), blocks)
 		if err != nil {
 			log.Fatal("Couldn't hand off the blocks to next server", s.id+1, err)
 		}
@@ -389,40 +398,42 @@ func (s *Server) gatherKeys(_ uint64) {
 
 	serversLeft := len(s.servers)-s.id
 
-	Xss := make([][][]byte, serversLeft)
-	Yss := make([][][]byte, serversLeft)
+	Xss := make([]*Points, serversLeft)
+	Yss := make([]*Points, serversLeft)
 
 	for i := range Xss {
-		Xss[i] = make([][]byte, s.totalClients)
-		Yss[i] = make([][]byte, s.totalClients)
-		for j := range Xss[i] {
-			Xss[i][j] = allKeys[j].C1s[i]
-			Yss[i][j] = allKeys[j].C2s[i]
+		Xs := make([][]byte, s.totalClients)
+		Ys := make([][]byte, s.totalClients)
+		for j := range Xs {
+			Xs[j] = allKeys[j].C1S[i].X
+			Ys[j] = allKeys[j].C2S[i].X
 		}
+		Xss[i] = &Points{Xs: Xs}
+		Yss[i] = &Points{Xs: Ys}
 	}
 
 	ik := InternalKey {
-		Xss: append([][][]byte{nil}, Xss ...),
-		Yss: append([][][]byte{nil}, Yss ...),
-		SId: s.id,
+		Xss: append([]*Points{nil}, Xss ...),
+		Yss: append([]*Points{nil}, Yss ...),
+		Sid: uint64(s.id),
 	}
 
-	aux := AuxKeyProof {
+	aux := &AuxKeyProof {
 		OrigXss: Xss,
 		OrigYss: Yss,
-		SId:     s.id,
+		Sid:     uint64(s.id),
 	}
 
 	var wg sync.WaitGroup
-	for _, rpcServer := range s.rpcServers {
+	for i := range s.servers {
 		wg.Add(1)
-		go func(rpcServer *rpc.Client) {
+		go func(i int) {
 			defer wg.Done()
-			err := rpcServer.Call("Server.PutAuxProof", &aux, nil)
+			_, err := s.servers[i].PutAuxProof(context.TODO(), aux)
 			if err != nil {
 				log.Fatal("Failed uploading shuffled and decoded blocks: ", err)
 			}
-		} (rpcServer)
+		} (i)
 	}
 	wg.Wait()
 
@@ -440,8 +451,8 @@ func (s *Server) shuffleKeys(_ uint64) {
 		Xss[i] = make([]abstract.Point, s.totalClients)
 		Yss[i] = make([]abstract.Point, s.totalClients)
 		for j := range Xss[i] {
-			Xss[i][j] = UnmarshalPoint(s.suite, keys.Xss[i+1][j])
-			Yss[i][j] = UnmarshalPoint(s.suite, keys.Yss[i+1][j])
+			Xss[i][j] = UnmarshalPoint(s.suite, keys.Xss[i+1].Xs[j])
+			Yss[i][j] = UnmarshalPoint(s.suite, keys.Yss[i+1].Xs[j])
 		}
 	}
 
@@ -485,42 +496,42 @@ func (s *Server) shuffleKeys(_ uint64) {
 	}
 
 	ik := InternalKey {
-		Xss: make([][][]byte, serversLeft),
-		Yss: make([][][]byte, serversLeft),
-		SId: s.id,
+		Xss: make([]*Points, serversLeft),
+		Yss: make([]*Points, serversLeft),
+		Sid: uint64(s.id),
 
-		Ybarss:  make([][][]byte, serversLeft),
+		Ybarss:  make([]*Points, serversLeft),
 		Proofs:  prfs,
 		Keys:    make([][]byte, serversLeft),
 	}
 
 	for i := range ik.Xss {
-		ik.Xss[i] = make([][]byte, s.totalClients)
-		ik.Yss[i] = make([][]byte, s.totalClients)
-		ik.Ybarss[i] = make([][]byte, s.totalClients)
-		for j := range ik.Xss[i] {
-			ik.Xss[i][j] = MarshalPoint(Xbarss[i][j])
+		ik.Xss[i] = &Points{Xs: make([][]byte, s.totalClients)}
+		ik.Yss[i] = &Points{Xs: make([][]byte, s.totalClients)}
+		ik.Ybarss[i] = &Points{Xs:make([][]byte, s.totalClients)}
+		for j := range ik.Xss[i].Xs {
+			ik.Xss[i].Xs[j] = MarshalPoint(Xbarss[i][j])
 			if i == 0 {
 				//i == 0 is my point, so don't pass it to next person
-				ik.Yss[i][j] = MarshalPoint(s.g.Point().Base())
+				ik.Yss[i].Xs[j] = MarshalPoint(s.g.Point().Base())
 			} else {
-				ik.Yss[i][j] = MarshalPoint(decss[i][j])
+				ik.Yss[i].Xs[j] = MarshalPoint(decss[i][j])
 			}
-			ik.Ybarss[i][j] = MarshalPoint(Ybarss[i][j])
+			ik.Ybarss[i].Xs[j] = MarshalPoint(Ybarss[i][j])
 		}
 		ik.Keys[i] = s.nextPksBin[i]
 	}
 
 	var wg sync.WaitGroup
-	for _, rpcServer := range s.rpcServers {
+	for i := range s.servers {
 		wg.Add(1)
-		go func(rpcServer *rpc.Client) {
+		go func(i int) {
 			defer wg.Done()
-			err := rpcServer.Call("Server.ShareServerKeys", &ik, nil)
+			_, err := s.servers[i].ShareServerKeys(context.TODO(), &ik)
 			if err != nil {
 				log.Fatal("Failed uploading shuffled and decoded blocks: ", err)
 			}
-		} (rpcServer)
+		} (i)
 	}
 	wg.Wait()
 }
@@ -530,39 +541,44 @@ func (s *Server) shuffleKeys(_ uint64) {
 ////////////////////////////////
 //register the client here, and notify the server it will be talking to
 //TODO: should check for duplicate clients, just in case..
-func (s *Server) Register(serverId int, clientId *int) error {
+func (s *Server) Register(cxt context.Context, sid *UInt) (*RegisterReply, error) {
 	s.regLock[0].Lock()
-	*clientId = s.totalClients
+	clientId := uint64(s.totalClients)
 	client := &ClientRegistration{
-		ServerId: serverId,
-		Id: *clientId,
+		ServerId: sid.Val,
+		Id: clientId,
 	}
 	s.totalClients++
-	for _, rpcServer := range s.rpcServers {
-		err := rpcServer.Call("Server.Register2", client, nil)
+	for _, server := range s.servers {
+		_, err := server.Register2(context.TODO(), client)
 		if err != nil {
-			log.Fatal(fmt.Sprintf("Cannot connect to %d: ", serverId), err)
+			log.Fatal(fmt.Sprintf("Cannot connect to %d: ", sid.Val), err)
 		}
 	}
 	if s.totalClients == TotalClients {
 		s.registerDone()
 	}
-	fmt.Println("Registered", *clientId)
+	fmt.Println("Registered", clientId)
 	s.regLock[0].Unlock()
-	return nil
+	<-s.regChan
+	reply := &RegisterReply{
+		Id: clientId,
+		NumClients: uint64(s.totalClients),
+		Pks: s.pksBin}
+	return reply, nil
 }
 
 //called to increment total number of clients
-func (s *Server) Register2(client *ClientRegistration, _ *int) error {
+func (s *Server) Register2(cxt context.Context, client *ClientRegistration) (*Empty, error) {
 	s.regLock[1].Lock()
-	s.clientMap[client.Id] = client.ServerId
+	s.clientMap[int(client.Id)] = int(client.ServerId)
 	s.regLock[1].Unlock()
-	return nil
+	return &Empty{}, nil
 }
 
 func (s *Server) registerDone() {
-	for _, rpcServer := range s.rpcServers {
-		err := rpcServer.Call("Server.RegisterDone2", s.totalClients, nil)
+	for _, server := range s.servers {
+		_, err := server.RegisterDone2(context.TODO(), &UInt{Val: uint64(s.totalClients)})
 		if err != nil {
 			log.Fatal("Cannot update num clients")
 		}
@@ -573,7 +589,8 @@ func (s *Server) registerDone() {
 	}
 }
 
-func (s *Server) RegisterDone2(numClients int, _ *int) error {
+func (s *Server) RegisterDone2(cxt context.Context, nc *UInt) (*Empty, error) {
+	numClients := int(nc.Val)
 	s.totalClients = numClients
 
 	size := (numClients/SecretSize)*SecretSize + SecretSize
@@ -603,7 +620,7 @@ func (s *Server) RegisterDone2(numClients int, _ *int) error {
 			}
 		}
 
-		s.rounds[r].requestsChan = make(chan []Request)
+		s.rounds[r].requestsChan = make(chan []*Request)
 		s.rounds[r].reqHashes = make([][]byte, numClients)
 
 		s.rounds[r].reqChan2 = make([]chan Request, numClients)
@@ -623,37 +640,37 @@ func (s *Server) RegisterDone2(numClients int, _ *int) error {
 	s.regDone <- true
 	fmt.Println(s.id, "Register done")
 	<-s.running
-	return nil
+	return &Empty{}, nil
 }
 
 func (s *Server) connectServers() {
-	rpcServers := make([]*rpc.Client, len(s.servers))
-	for i := range rpcServers {
-		var rpcServer *rpc.Client
+	for i := range s.conns {
+		var conn *grpc.ClientConn
 		var err error = errors.New("")
 		for ; err != nil ; {
 			if i == s.id { //make a local rpc
-				addr := fmt.Sprintf("127.0.0.1:%d", s.port)
-				rpcServer, err = rpc.Dial("tcp", addr)
+				addr := fmt.Sprintf("127.0.0.1:%d", s.port2)
+				conn, err = grpc.Dial(addr)
 			} else {
-				rpcServer, err = rpc.Dial("tcp", s.servers[i])
+				conn, err = grpc.Dial(s.serverAddrs[i])
 			}
 		}
-		rpcServers[i] = rpcServer
+		s.conns[i] = conn
+		s.servers[i] = NewRiffleInternalClient(conn)
 	}
 
 	var wg sync.WaitGroup
-	for i, rpcServer := range rpcServers {
+	for i := range s.servers {
 		wg.Add(1)
-		go func (i int, rpcServer *rpc.Client) {
+		go func (i int) {
 			defer wg.Done()
-			pk := make([]byte, SecretSize)
-			err := rpcServer.Call("Server.GetPK", 0, &pk)
+			pk, err := s.servers[i].GetPK(context.TODO(), &Empty{})
 			if err != nil {
 				log.Fatal("Couldn't get server's pk: ", err)
 			}
-			s.pks[i] = UnmarshalPoint(s.suite, pk)
-		} (i, rpcServer)
+			s.pks[i] = UnmarshalPoint(s.suite, pk.X)
+			s.pksBin[i] = pk.X
+		} (i)
 	}
 	wg.Wait()
 	for i := 0; i < len(s.servers)-s.id; i++ {
@@ -664,24 +681,17 @@ func (s *Server) connectServers() {
 		s.nextPks[i] = pk
 		s.nextPksBin[i] = MarshalPoint(pk)
 	}
-	s.rpcServers = rpcServers
-	//s.connectDone <- true
 }
 
-func (s *Server) GetNumClients(_ int, num *int) error {
-	<-s.regChan
-	*num = s.totalClients
-	return nil
+func (s *Server) GetPK(ctx context.Context, _ *Empty) (*Point, error) {
+	pt := Point{X: s.pkBin}
+	return &pt, nil
 }
 
-func (s *Server) GetPK(_ int, pk *[]byte) error {
-	*pk = s.pkBin
-	return nil
-}
-
-func (s *Server) UploadKeys(key *UpKey, _*int) error {
+func (s *Server) UploadKeys(ctx context.Context, key *UpKey) (*Empty, error) {
 	s.keyUploadChan <- *key
-	return nil
+	<-s.keysRdy
+	return &Empty{}, nil
 }
 
 func (s *Server) shareSecret(clientPublic abstract.Point) (abstract.Point, abstract.Point) {
@@ -695,99 +705,80 @@ func (s *Server) shareSecret(clientPublic abstract.Point) (abstract.Point, abstr
 	return public, sharedSecret
 }
 
-func (s *Server) ShareMask(clientDH *ClientDH, serverPub *[]byte) error {
-	pub, shared := s.shareSecret(UnmarshalPoint(s.suite, clientDH.Public))
-	mask := MarshalPoint(shared)
+func (s *Server) ShareSecrets(ctx context.Context, clientDH *ClientDH) (*Points, error) {
+	pub1, shared1 := s.shareSecret(UnmarshalPoint(s.suite, clientDH.Public))
+	pub2, shared2 := s.shareSecret(UnmarshalPoint(s.suite, clientDH.Public))
+	mask := MarshalPoint(shared1)
+	secret := MarshalPoint(shared2)
 	for r := 0; r < MaxRounds; r++ {
 		if r == 0 {
 			sha3.ShakeSum256(s.maskss[r][clientDH.Id], mask)
-		} else {
-			sha3.ShakeSum256(s.maskss[r][clientDH.Id], s.maskss[r-1][clientDH.Id])
-		}
-	}
-	*serverPub = MarshalPoint(pub)
-	return nil
-}
-
-func (s *Server) ShareSecret(clientDH *ClientDH, serverPub *[]byte) error {
-	pub, shared := s.shareSecret(UnmarshalPoint(s.suite, clientDH.Public))
-	secret := MarshalPoint(shared)
-	for r := 0; r < MaxRounds; r++ {
-		if r == 0 {
 			sha3.ShakeSum256(s.secretss[r][clientDH.Id], secret)
 		} else {
+			sha3.ShakeSum256(s.maskss[r][clientDH.Id], s.maskss[r-1][clientDH.Id])
 			sha3.ShakeSum256(s.secretss[r][clientDH.Id], s.secretss[r-1][clientDH.Id])
 		}
 	}
-	//s.secretss[clientDH.Id] = make([]byte, len(MarshalPoint(shared)))
-	*serverPub = MarshalPoint(pub)
-	return nil
+	pts := Points{Xs: [][]byte{MarshalPoint(pub1), MarshalPoint(pub2)}}
+	return &pts, nil
 }
 
-func (s *Server) GetEphKey(_ int, serverPub *[]byte) error {
-	pub := s.g.Point().Mul(s.g.Point().Base(), s.ephSecret)
-	*serverPub = MarshalPoint(pub)
-	return nil
+func (s *Server) PutAuxProof(ctx context.Context, aux *AuxKeyProof) (*Empty, error) {
+	s.auxProofChan[aux.Sid] <- *aux
+	return &Empty{}, nil
 }
 
-func (s *Server) PutAuxProof(aux *AuxKeyProof, _ *int) error {
-	s.auxProofChan[aux.SId] <- *aux
-	return nil
-}
-
-func (s *Server) ShareServerKeys(ik *InternalKey, correct *bool) error {
-	aux := <-s.auxProofChan[ik.SId]
+func (s *Server) ShareServerKeys(ctx context.Context, ik *InternalKey) (*Bool, error) {
+	aux := <-s.auxProofChan[ik.Sid]
 	good := s.verifyShuffle(*ik, aux)
 
-	if ik.SId != len(s.servers) - 1 {
+	if int(ik.Sid) != len(s.servers) - 1 {
 		aux = AuxKeyProof {
 			OrigXss: ik.Xss[1:],
 			OrigYss: ik.Yss[1:],
-			SId:     ik.SId + 1,
+			Sid:     ik.Sid + 1,
 		}
-		s.auxProofChan[aux.SId] <- aux
+		s.auxProofChan[aux.Sid] <- aux
 	}
 
-	if ik.SId == len(s.servers) - 1 && s.id == 0 {
+	if int(ik.Sid) == len(s.servers) - 1 && s.id == 0 {
 		for i := 0; i < s.totalClients; i++ {
 			go func () {
 				s.keysRdy <- true
 			} ()
 		}
-	} else if ik.SId == s.id - 1 {
+	} else if int(ik.Sid) == s.id - 1 {
 		ik.Ybarss = nil
 		ik.Proofs = nil
 		ik.Keys = nil
 		s.keyShuffleChan <- *ik
 	}
-	*correct = good
-	return nil
-}
-
-func (s *Server) KeyReady(id int, _ *int) error {
-	<-s.keysRdy
-	return nil
+	correct := Bool{Val: good}
+	return &correct, nil
 }
 
 /////////////////////////////////
 //Request
 ////////////////////////////////
-func (s *Server) RequestBlock(req *Request, hashes *[][]byte) error {
+func (s *Server) RequestBlock(ctx context.Context, req *Request) (*Hashes, error) {
 	round := req.Round % MaxRounds
-	err := s.rpcServers[0].Call("Server.RequestBlock2", req, nil)
+	_, err := s.servers[0].RequestBlock2(ctx, req)
+	if err != nil {
+		log.Fatal("Couldn't send request block: ", err)
+	}
 	<-s.rounds[round].reqHashesRdy[req.Id]
-	*hashes = s.rounds[round].reqHashes
-	return err
+	hashes := &Hashes{Hashes: s.rounds[round].reqHashes}
+	return hashes, err
 }
 
-func (s *Server) RequestBlock2(req *Request, _ *int) error {
+func (s *Server) RequestBlock2(ctx context.Context, req *Request) (*Empty, error) {
 	round := req.Round % MaxRounds
 	s.rounds[round].reqChan2[req.Id] <- *req
-	return nil
+	return &Empty{}, nil
 }
 
-func (s *Server) PutPlainRequests(rs *[]Request, _ *int) error {
-	reqs := *rs
+func (s *Server) PutPlainRequests(ctx context.Context, rs *Requests) (*Empty, error) {
+	reqs := rs.Requests
 	round := reqs[0].Round % MaxRounds
 	for i := range reqs {
 		s.rounds[round].reqHashes[i] = reqs[i].Hash
@@ -802,51 +793,55 @@ func (s *Server) PutPlainRequests(rs *[]Request, _ *int) error {
 		} (i, round)
 	}
 
-	return nil
+	return &Empty{}, nil
 }
 
-func (s *Server) ShareServerRequests(reqs *[]Request, _ *int) error {
-	round := (*reqs)[0].Round % MaxRounds
-	s.rounds[round].requestsChan <- *reqs
-	return nil
+func (s *Server) ShareServerRequests(ctx context.Context, rs *Requests) (*Empty, error) {
+	reqs := rs.Requests
+	round := reqs[0].Round % MaxRounds
+	s.rounds[round].requestsChan <- rs.Requests
+	return &Empty{}, nil
 }
 
 /////////////////////////////////
 //Upload
 ////////////////////////////////
-func (s *Server) UploadBlock(block *Block, hashes *[][]byte) error {
+func (s *Server) UploadBlock(ctx context.Context, block *Block) (*Hashes, error) {
 	round := block.Round % MaxRounds
-	err := s.rpcServers[0].Call("Server.UploadBlock2", block, nil)
+	_, err := s.servers[0].UploadBlock2(ctx, block)
 	if err != nil {
 		log.Fatal("Couldn't send block to first server: ", err)
 	}
 	<-s.rounds[round].upHashesRdy[block.Id]
-	*hashes = s.rounds[round].upHashes
-	return nil
+	hashes := &Hashes{Hashes: s.rounds[round].upHashes}
+	return hashes, nil
 }
 
-func (s *Server) UploadBlock2(block *Block, _ *int) error {
+func (s *Server) UploadBlock2(ctx context.Context, block *Block) (*Empty, error) {
 	round := block.Round % MaxRounds
 	s.rounds[round].ublockChan2[block.Id] <- *block
-	return nil
+	return &Empty{}, nil
 }
 
-func (s *Server) UploadSmall(block *Block, _ *int) error {
-	err := s.rpcServers[0].Call("Server.UploadBlock2", block, nil)
+func (s *Server) UploadSmall(ctx context.Context, block *Block) (*Empty, error) {
+	_, err := s.servers[0].UploadBlock2(ctx, block)
 	if err != nil {
 		log.Fatal("Couldn't send block to first server: ", err)
 	}
-	return nil
+	return &Empty{}, nil
 }
 
-func (s *Server) UploadSmall2(block *Block, _ *int) error {
+func (s *Server) UploadSmall2(ctx context.Context, block *Block) (*Empty, error) {
 	round := block.Round % MaxRounds
 	s.rounds[round].ublockChan2[block.Id] <- *block
-	return nil
+	return &Empty{}, nil
 }
 
-func (s *Server) PutPlainBlocks(bs *[]Block, _ *int) error {
-	blocks := *bs
+func (s *Server) PutPlainBlocks(ctx context.Context, bs *Blocks) (*Empty, error) {
+	blocks := make([]Block, len(bs.Blocks))
+	for i := range bs.Blocks {
+		blocks[i] = *(bs.Blocks[i])
+	}
 	round := blocks[0].Round % MaxRounds
 
 	for i := range blocks {
@@ -867,21 +862,24 @@ func (s *Server) PutPlainBlocks(bs *[]Block, _ *int) error {
 	}
 
 	s.rounds[round].dblocksChan <- blocks
-
-	return nil
+	return &Empty{}, nil
 }
 
-func (s *Server) ShareServerBlocks(blocks *[]Block, _ *int) error {
-	round := (*blocks)[0].Round % MaxRounds
-	s.rounds[round].shuffleChan <- *blocks
-	return nil
+func (s *Server) ShareServerBlocks(ctx context.Context, bs *Blocks) (*Empty, error) {
+	blocks := make([]Block, len(bs.Blocks))
+	for i := range bs.Blocks {
+		blocks[i] = *(bs.Blocks[i])
+	}
+	round := blocks[0].Round % MaxRounds
+	s.rounds[round].shuffleChan <- blocks
+	return &Empty{}, nil
 }
 
 
 /////////////////////////////////
 //Download
 ////////////////////////////////
-func (s *Server) GetResponse(cmask ClientMask, response *[]byte) error {
+func (s *Server) GetResponse(ctx context.Context, cmask *ClientMask) (*Datum, error) {
 	t := time.Now()
 	round := cmask.Round % MaxRounds
 	otherBlocks := make([][]byte, len(s.servers))
@@ -893,9 +891,9 @@ func (s *Server) GetResponse(cmask ClientMask, response *[]byte) error {
 			wg.Add(1)
 			go func(i int, cmask ClientMask) {
 				defer wg.Done()
-				curBlock := <-s.rounds[round].xorsChan[i][cmask.Id]
+				curBlock := <-s.rounds[round].xorsChan[i][int(cmask.Id)]
 				otherBlocks[i] = curBlock.Block
-			} (i, cmask)
+			} (i, *cmask)
 		}
 	}
 	wg.Wait()
@@ -906,44 +904,50 @@ func (s *Server) GetResponse(cmask ClientMask, response *[]byte) error {
 	r := ComputeResponse(s.rounds[round].allBlocks, cmask.Mask, s.secretss[round][cmask.Id])
 	sha3.ShakeSum256(s.secretss[round][cmask.Id], s.secretss[round][cmask.Id])
 	Xor(Xors(otherBlocks), r)
-	*response = r
-	return nil
+	resp := &Datum{Datum: r}
+	return resp, nil
 }
 
-func (s *Server) GetAllResponses(args *RequestArg, responses *[][]byte) error {
+func (s *Server) GetAllResponses(ctx context.Context, args *RequestArg) (*Data, error) {
 	round := args.Round % MaxRounds
 	<-s.rounds[round].blocksRdy[args.Id]
 	resps := make([][]byte, s.totalClients)
 	for i := range s.rounds[round].allBlocks {
 		resps[i] = s.rounds[round].allBlocks[i].Block
 	}
-	*responses = resps
-	return nil
+	resp := &Data{Data: resps}
+	return resp, nil
 }
 
 //used to push response for particular client
-func (s *Server) PutClientBlock(cblock ClientBlock, _ *int) error {
-	block := cblock.Block
+func (s *Server) PutClientBlock(ctx context.Context, cblock *ClientBlock) (*Empty, error) {
+	block := *cblock.Block
 	round := block.Round % MaxRounds
-	s.rounds[round].xorsChan[cblock.SId][cblock.CId] <- block
-	return nil
+	s.rounds[round].xorsChan[cblock.Sid][int(cblock.Cid)] <- block
+	return &Empty{}, nil
 }
 
 /////////////////////////////////
 //Misc
 ////////////////////////////////
 //used for the local test function to start the server
-func (s *Server) MainLoop(_ int, _ *int) error {
-	rpcServer := rpc.NewServer()
-	rpcServer.Register(s)
-	l, err := net.Listen("tcp", s.addr)
+func (s *Server) MainLoop() error {
+	l1, err := net.Listen("tcp", fmt.Sprintf(":%d", s.port1))
 	if err != nil {
-		panic("Cannot starting listening to the port")
+		log.Fatal("Cannot starting listening to the port: ", s.port1)
 	}
-	go rpcServer.Accept(l)
+	l2, err := net.Listen("tcp", fmt.Sprintf(":%d", s.port2))
+	if err != nil {
+		log.Fatal("Cannot starting listening to the port: ", s.port2)
+	}
+	rpcServer1 := grpc.NewServer()
+	rpcServer2 := grpc.NewServer()
+	RegisterRiffleServer(rpcServer1, s)
+	RegisterRiffleInternalServer(rpcServer2, s)
+	go rpcServer1.Serve(l1)
+	go rpcServer2.Serve(l2)
 	s.connectServers()
 	go s.runHandlers()
-
 	return nil
 }
 
@@ -957,15 +961,15 @@ func (s *Server) verifyShuffle(ik InternalKey, aux AuxKeyProof) bool {
 
 	for i := range Xss {
 		pk := UnmarshalPoint(s.suite, ik.Keys[i])
-		Xs := make([]abstract.Point, len(Xss[i]))
-		Ys := make([]abstract.Point, len(Yss[i]))
-		Xbars := make([]abstract.Point, len(Xbarss[i]))
-		Ybars := make([]abstract.Point, len(Ybarss[i]))
-		for j := range Xss[i] {
-			Xs[j] = UnmarshalPoint(s.suite, Xss[i][j])
-			Ys[j] = UnmarshalPoint(s.suite, Yss[i][j])
-			Xbars[j] = UnmarshalPoint(s.suite, Xbarss[i][j])
-			Ybars[j] = UnmarshalPoint(s.suite, Ybarss[i][j])
+		Xs := make([]abstract.Point, len(Xss[i].Xs))
+		Ys := make([]abstract.Point, len(Yss[i].Xs))
+		Xbars := make([]abstract.Point, len(Xbarss[i].Xs))
+		Ybars := make([]abstract.Point, len(Ybarss[i].Xs))
+		for j := range Xss[i].Xs {
+			Xs[j] = UnmarshalPoint(s.suite, Xss[i].Xs[j])
+			Ys[j] = UnmarshalPoint(s.suite, Yss[i].Xs[j])
+			Xbars[j] = UnmarshalPoint(s.suite, Xbarss[i].Xs[j])
+			Ybars[j] = UnmarshalPoint(s.suite, Ybarss[i].Xs[j])
 		}
 		v := shuffle.Verifier(s.suite, nil, pk, Xs, Ys, Xbars, Ybars)
 		err := proof.HashVerify(s.suite, "PairShuffle", v, prfss[i])
@@ -1035,6 +1039,8 @@ func main() {
 	var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
 	var memprofile = flag.String("memprofile", "", "write memory profile to this file")
 	var id *int = flag.Int("i", 0, "id [num]")
+	var port1 *int = flag.Int("p1", 8000, "port1 [num]")
+	var port2 *int = flag.Int("p2", 8001, "port1 [num]")
 	var servers *string = flag.String("s", "", "servers [file]")
 	var numClients *int = flag.Int("n", 0, "num clients [num]")
 	var mode *string = flag.String("m", "", "mode [m for microblogging|f for file sharing]")
@@ -1053,7 +1059,7 @@ func main() {
 
 	SetTotalClients(*numClients)
 
-	s := NewServer(ss[*id], ServerPort + *id, *id, ss, *mode == "f")
+	s := NewServer(*port1, *port2, *id, ss, *mode == "f")
 
 	if *memprofile != "" {
                 f, err := os.Create(*memprofile)
@@ -1063,14 +1069,21 @@ func main() {
                 s.memProf = f
         }
 
-	rpcServer := rpc.NewServer()
-	rpcServer.Register(s)
-	l, err := net.Listen("tcp", fmt.Sprintf(":%d", s.port))
+	l1, err := net.Listen("tcp", fmt.Sprintf(":%d", s.port1))
 	if err != nil {
 		panic("Cannot starting listening to the port")
 	}
+	l2, err := net.Listen("tcp", fmt.Sprintf(":%d", s.port2))
+	if err != nil {
+		panic("Cannot starting listening to the port")
+	}
+	rpcServer1 := grpc.NewServer()
+	rpcServer2 := grpc.NewServer()
+	RegisterRiffleServer(rpcServer1, s)
+	RegisterRiffleInternalServer(rpcServer2, s)
+	go rpcServer1.Serve(l1)
+	go rpcServer2.Serve(l2)
 
-	go rpcServer.Accept(l)
 	s.connectServers()
 	fmt.Println("Starting server", *id)
 	s.runHandlers()

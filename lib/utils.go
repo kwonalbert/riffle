@@ -17,6 +17,11 @@ import (
 	"github.com/dedis/crypto/random"
 )
 
+type File struct {
+	Name            string
+	Hashes          map[string]int64 //maps hash to offset
+}
+
 func SetBit(n_int int, b bool, bs []byte) {
 	n := uint(n_int)
 	if b {

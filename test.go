@@ -14,13 +14,12 @@ func setup(numServers int, numClients int) ([]*server.Server, []*client.Client) 
 	fmt.Println(fmt.Sprintf("Setting up for %d servers and %d clients", numServers, numClients))
 	server.SetTotalClients(numClients)
 
-	ss := make([]string, numServers)
+	ss1 := make([]string, numServers)
+	ss2 := make([]string, numServers)
 	cs := make([]string, numClients)
-	for i := range ss {
-		ss[i] = fmt.Sprintf("127.0.0.1:%d", 8000+i)
-	}
-	for i := range cs {
-		cs[i] = fmt.Sprintf("127.0.0.1:%d", 9000+i)
+	for i := range ss1 {
+		ss1[i] = fmt.Sprintf("127.0.0.1:%d", 8000+2*i)
+		ss2[i] = fmt.Sprintf("127.0.0.1:%d", 8001+2*i)
 	}
 
 	servers := make([]*server.Server, numServers)
@@ -28,13 +27,13 @@ func setup(numServers int, numClients int) ([]*server.Server, []*client.Client) 
 
 	fmt.Println("Starting servers")
 	var wg sync.WaitGroup
-	for i := range ss {
+	for i := range ss1 {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			s := server.NewServer(ss[i], 8000+i, i, ss, false)
+			s := server.NewServer(8000+2*i, 8001+2*i, i, ss2, false)
 			servers[i] = s
-			_ = s.MainLoop(0, nil)
+			_ = s.MainLoop()
 		} (i)
 	}
 	wg.Wait()
@@ -44,10 +43,9 @@ func setup(numServers int, numClients int) ([]*server.Server, []*client.Client) 
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			c := client.NewClient(ss, ServerAddrs[i%len(ServerAddrs)], false)
+			c := client.NewClient(ss1, ss1[i%len(ss1)], false)
 			clients[i] = c
 			c.Register(0)
-			c.RegisterDone(0)
 			c.ShareSecret()
 			//c.UploadKeys(0)
 		} (i)
@@ -62,8 +60,8 @@ func setup(numServers int, numClients int) ([]*server.Server, []*client.Client) 
 		cmasks := make([][][]byte, lib.MaxRounds)
 		csecrets := make([][][]byte, lib.MaxRounds)
 		for r := range masks {
-			cmasks[r] = make([][]byte, NumClients)
-			csecrets[r] = make([][]byte, NumClients)
+			cmasks[r] = make([][]byte, numClients)
+			csecrets[r] = make([][]byte, numClients)
 			for _, c := range clients {
 				cmasks[r][c.Id()] = c.Masks()[r][i]
 				csecrets[r][c.Id()] = c.Secrets()[r][i]
@@ -74,38 +72,38 @@ func setup(numServers int, numClients int) ([]*server.Server, []*client.Client) 
 	}
 
 
-	shared := make([][]bool, numClients)
-	for i := range shared {
-		shared[i] = make([]bool, numServers)
-		for j := range shared[i] {
-			shared[i][j] = false
-		}
-	}
+	// shared := make([][]bool, numClients)
+	// for i := range shared {
+	// 	shared[i] = make([]bool, numServers)
+	// 	for j := range shared[i] {
+	// 		shared[i][j] = false
+	// 	}
+	// }
 
-	skeyss := make([][][]byte, len(servers))
-	for i, s := range servers {
-		skeyss[i] = s.Keys()
-	}
+	// skeyss := make([][][]byte, len(servers))
+	// for i, s := range servers {
+	// 	skeyss[i] = s.Keys()
+	// }
 
-	for i, c := range clients {
-		ckeys := c.Keys()
-		for j := range ckeys {
-			//server k's key
-			if lib.Membership(ckeys[j], skeyss[j]) == -1 {
-				log.Fatal("Key share failed!")
-			}
-			shared[i][j] = true
-		}
-	}
-	for i := range shared {
-		for j := range shared[i] {
-			if !shared[i][j] {
-				fmt.Println("Key duplicated!")
-			}
-		}
-	}
+	// for i, c := range clients {
+	// 	ckeys := c.Keys()
+	// 	for j := range ckeys {
+	// 		//server k's key
+	// 		if lib.Membership(ckeys[j], skeyss[j]) == -1 {
+	// 			log.Fatal("Key share failed!")
+	// 		}
+	// 		shared[i][j] = true
+	// 	}
+	// }
+	// for i := range shared {
+	// 	for j := range shared[i] {
+	// 		if !shared[i][j] {
+	// 			fmt.Println("Key duplicated!")
+	// 		}
+	// 	}
+	// }
 
-	fmt.Println("Secret shared")
+	// fmt.Println("Secret shared")
 
 	return servers, clients
 }
@@ -128,4 +126,3 @@ func registerBlocks(testData [][]byte) {
 	}
 
 }
-

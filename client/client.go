@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"log"
-	"net/rpc"
 	"sync"
 	"time"
 
@@ -19,6 +18,8 @@ import (
 
 	"golang.org/x/crypto/nacl/secretbox"
 	"golang.org/x/crypto/sha3"
+	"golang.org/x/net/context"
+	"google.golang.org/grpc"
 )
 
 var profile = false
@@ -26,11 +27,11 @@ var debug = false
 
 //assumes RPC model of communication
 type Client struct {
-	id              int //client id
-	servers         []string //all servers
-	rpcServers      []*rpc.Client
-	myServer        int //server downloading from (using PIR)
-	totalClients    int
+	id              uint64 //client id
+	conns           []*grpc.ClientConn
+	servers         []RiffleClient //all servers
+	myServer        *UInt //server downloading from (using PIR)
+	totalClients    uint64
 
 	FSMode          bool //true for microblogging, false for file sharing
 
@@ -68,37 +69,24 @@ type Round struct {
 func NewClient(servers []string, myServer string, FSMode bool) *Client {
 	suite := edwards.NewAES128SHA256Ed25519(false)
 
-	myServerIdx := -1
-	rpcServers := make([]*rpc.Client, len(servers))
-	for i := range rpcServers {
-		if servers[i] == myServer {
-			myServerIdx = i
+	myServerIdx := &UInt{}
+	conns := make([]*grpc.ClientConn, len(servers))
+	rpcServers := make([]RiffleClient, len(servers))
+	for i, server := range servers {
+		if server == myServer {
+			myServerIdx.Val = uint64(i)
 		}
-		rpcServer, err := rpc.Dial("tcp", servers[i])
+		conn, err := grpc.Dial(server)
 		if err != nil {
 			log.Fatal("Cannot establish connection:", err)
 		}
-		rpcServers[i] = rpcServer
+		conns[i] = conn
+		rpcServers[i] = NewRiffleClient(conn)
 	}
 
 	pks := make([]abstract.Point, len(servers))
-	var wg sync.WaitGroup
-	for i, rpcServer := range rpcServers {
-		wg.Add(1)
-		go func(i int, rpcServer *rpc.Client) {
-			defer wg.Done()
-			pk := make([]byte, SecretSize)
-			err := rpcServer.Call("Server.GetPK", 0, &pk)
-			if err != nil {
-				log.Fatal("Couldn't get server's pk:", err)
-			}
-			pks[i] = UnmarshalPoint(suite, pk)
-		} (i, rpcServer)
-	}
-	wg.Wait()
 
 	rounds := make([]*Round, MaxRounds)
-
 	for i := range rounds {
 		r := Round{
 			reqLock:        new(sync.Mutex),
@@ -114,11 +102,10 @@ func NewClient(servers []string, myServer string, FSMode bool) *Client {
 
 	//id comes from servers
 	c := Client {
-		id:             -1,
-		servers:        servers,
-		rpcServers:     rpcServers,
+		id:             0,
+		servers:        rpcServers,
 		myServer:       myServerIdx,
-		totalClients:   -1,
+		totalClients:   0,
 
 		FSMode:         FSMode,
 
@@ -148,23 +135,16 @@ func NewClient(servers []string, myServer string, FSMode bool) *Client {
 //Registration and Setup
 ////////////////////////////////
 func (c *Client) Register(idx int) {
-	var id int
-	err := c.rpcServers[idx].Call("Server.Register", c.myServer, &id)
+	reply, err := c.servers[idx].Register(context.TODO(), c.myServer)
 	if err != nil {
 		log.Fatal("Couldn't register: ", err)
 	}
-	c.id = id
-}
-
-func (c *Client) RegisterDone(idx int) {
-	var totalClients int
-	err := c.rpcServers[idx].Call("Server.GetNumClients", 0, &totalClients)
-	if err != nil {
-		log.Fatal("Couldn't get number of clients")
+	c.id = reply.Id
+	c.totalClients = reply.NumClients
+	for i, pk := range reply.Pks {
+		c.pks[i] = UnmarshalPoint(c.suite, pk)
 	}
-	c.totalClients = totalClients
-
-	size := (totalClients/SecretSize)*SecretSize + SecretSize
+	size := (c.totalClients/SecretSize)*SecretSize + SecretSize
 	c.maskss = make([][][]byte, MaxRounds)
 	c.secretss = make([][][]byte, MaxRounds)
 	for r := range c.maskss {
@@ -199,24 +179,19 @@ func (c *Client) UploadKeys(idx int) {
 	}
 
 	upkey := UpKey {
-		C1s: make([][]byte, len(c1s)),
-		C2s: make([][]byte, len(c1s)),
+		C1S: make([]*Point, len(c1s)),
+		C2S: make([]*Point, len(c1s)),
 		Id: c.id,
 	}
 
 	for i := range c1s {
-		upkey.C1s[i] = MarshalPoint(c1s[i])
-		upkey.C2s[i] = MarshalPoint(c2s[i])
+		upkey.C1S[i] = &Point{X: MarshalPoint(c1s[i])}
+		upkey.C2S[i] = &Point{X: MarshalPoint(c2s[i])}
 	}
 
-	err := c.rpcServers[idx].Call("Server.UploadKeys", &upkey, nil)
+	_, err := c.servers[idx].UploadKeys(context.TODO(), &upkey)
 	if err != nil {
 		log.Fatal("Couldn't upload a key: ", err)
-	}
-
-	err = c.rpcServers[idx].Call("Server.KeyReady", c.id, nil)
-	if err != nil {
-		log.Fatal("Couldn't determine key ready", err)
 	}
 }
 
@@ -224,19 +199,13 @@ func (c *Client) UploadKeys(idx int) {
 func (c *Client) ShareSecret() {
 	gen := c.g.Point().Base()
 	rand := c.suite.Cipher(abstract.RandomKey)
-	secret1 := c.g.Secret().Pick(rand)
-	secret2 := c.g.Secret().Pick(rand)
-	public1 := c.g.Point().Mul(gen, secret1)
-	public2 := c.g.Point().Mul(gen, secret2)
+	secret := c.g.Secret().Pick(rand)
+	public := c.g.Point().Mul(gen, secret)
 
 	//generate share secrets via Diffie-Hellman w/ all servers
 	//one used for masks, one used for one-time pad
-	cs1 := ClientDH {
-		Public: MarshalPoint(public1),
-		Id: c.id,
-	}
-	cs2 := ClientDH {
-		Public: MarshalPoint(public2),
+	cs := ClientDH {
+		Public: MarshalPoint(public),
 		Id: c.id,
 	}
 
@@ -244,26 +213,22 @@ func (c *Client) ShareSecret() {
 	secrets := make([][]byte, len(c.servers))
 
 	var wg sync.WaitGroup
-	for i, rpcServer := range c.rpcServers {
+	for i := range c.servers {
 		wg.Add(1)
-		go func(i int, rpcServer *rpc.Client, cs1 ClientDH, cs2 ClientDH) {
+		go func(i int, cs ClientDH) {
 			defer wg.Done()
-			servPub1 := make([]byte, SecretSize)
-			servPub2 := make([]byte, SecretSize)
-			servPub3 := make([]byte, SecretSize)
-			call1 := rpcServer.Go("Server.ShareMask", &cs1, &servPub1, nil)
-			call2 := rpcServer.Go("Server.ShareSecret", &cs2, &servPub2, nil)
-			call3 := rpcServer.Go("Server.GetEphKey", 0, &servPub3, nil)
-			<-call1.Done
-			<-call2.Done
-			<-call3.Done
-			masks[i] = MarshalPoint(c.g.Point().Mul(UnmarshalPoint(c.suite, servPub1), secret1))
+			pts, err := c.servers[i].ShareSecrets(context.TODO(), &cs)
+			if err != nil {
+				log.Fatal("Could not share secret: ", err)
+			}
+			serv0 := UnmarshalPoint(c.suite, pts.Xs[0])
+			serv1 := UnmarshalPoint(c.suite, pts.Xs[1])
+			masks[i] = MarshalPoint(c.g.Point().Mul(serv0, secret))
 			// c.masks[i] = make([]byte, SecretSize)
 			// c.masks[i][c.id] = 1
-			secrets[i] = MarshalPoint(c.g.Point().Mul(UnmarshalPoint(c.suite, servPub2), secret2))
+			secrets[i] = MarshalPoint(c.g.Point().Mul(serv1, secret))
 			//secrets[i] = make([]byte, SecretSize)
-			c.ephKeys[i] = UnmarshalPoint(c.suite, servPub3)
-		} (i, rpcServer, cs1, cs2)
+		} (i, cs)
 	}
 	wg.Wait()
 
@@ -302,15 +267,14 @@ func (c *Client) RequestBlock(hash []byte, rnd uint64) ([]byte, [][]byte) {
 	}
 
 	t = time.Now()
-	var hashes [][]byte
-	err := c.rpcServers[c.myServer].Call("Server.RequestBlock", &req, &hashes)
+	hashes, err := c.servers[c.myServer.Val].RequestBlock(context.TODO(), &req)
 	if err != nil {
 		log.Fatal("Couldn't request a block: ", err)
 	}
 	if c.id == 0 && profile {
 		fmt.Println(c.id, "req_network:", time.Since(t))
 	}
-	return hash, hashes
+	return hash, hashes.Hashes
 }
 
 /////////////////////////////////
@@ -355,26 +319,24 @@ func (c *Client) Upload(hashes [][]byte, rnd uint64) [][]byte {
 func (c *Client) UploadBlock(block Block) [][]byte {
 	block.Block = c.seal(block.Block, block.Round)
 
-	var hashes [][]byte
 	t := time.Now()
-	err := c.rpcServers[c.myServer].Call("Server.UploadBlock", &block, &hashes)
+	hashes, err := c.servers[c.myServer.Val].UploadBlock(context.TODO(), &block)
 	if err != nil {
 		log.Fatal("Couldn't upload a block: ", err)
 	}
 	if c.id == 0 && profile {
 		fmt.Println(c.id, "up_network:", time.Since(t))
 	}
-	return hashes
+	return hashes.Hashes
 }
 
 func (c *Client) UploadSmall(block Block) {
 	block.Block = c.seal(block.Block, block.Round)
-	err := c.rpcServers[c.myServer].Call("Server.UploadSmall", &block, nil)
+	_, err := c.servers[c.myServer.Val].UploadSmall(context.TODO(), &block)
 	if err != nil {
 		log.Fatal("Couldn't upload a block: ", err)
 	}
 }
-
 
 /////////////////////////////////
 //Download
@@ -391,13 +353,12 @@ func (c *Client) DownloadAll(rnd uint64) [][]byte {
 	round := rnd % MaxRounds
 	c.rounds[round].downLock.Lock()
 	args := RequestArg{Id: c.id, Round: rnd}
-	resps := make([][]byte, c.totalClients)
-	err := c.rpcServers[c.myServer].Call("Server.GetAllResponses", &args, &resps)
+	data, err := c.servers[c.myServer.Val].GetAllResponses(context.TODO(), &args)
 	if err != nil {
 		log.Fatal("Couldn't download up hashes: ", err)
 	}
 	c.rounds[round].downLock.Unlock()
-	return resps
+	return data.Data
 }
 
 func (c *Client) DownloadBlock(hash []byte, hashes [][]byte, rnd uint64) []byte {
@@ -417,24 +378,23 @@ func (c *Client) DownloadSlot(slot int, rnd uint64) []byte {
 	finalMask := make([]byte, maskSize)
 	SetBit(slot, true, finalMask)
 	mask := Xors(c.maskss[round])
-	Xor(c.maskss[round][c.myServer], mask)
+	Xor(c.maskss[round][c.myServer.Val], mask)
 	Xor(finalMask, mask)
 
 	//one response includes all the secrets
-	response := make([]byte, BlockSize)
 	secretsXor := Xors(c.secretss[round])
 	cMask := ClientMask {Mask: mask, Id: c.id, Round: rnd}
 
 	t := time.Now()
-	err := c.rpcServers[c.myServer].Call("Server.GetResponse", cMask, &response)
+	datum, err := c.servers[c.myServer.Val].GetResponse(context.TODO(), &cMask)
 	if err != nil {
 		log.Fatal("Could not get response: ", err)
 	}
+	response := datum.Datum
 
 	if c.id == 0 && profile {
 		fmt.Println(c.id, "down_network_total:", time.Since(t))
 	}
-
 
 	Xor(secretsXor, response)
 
@@ -502,7 +462,7 @@ func (c *Client) UploadPieces(hashes [][]byte, rnd uint64) {
 	c.rounds[round].upLock.Unlock()
 }
 
-func (c *Client) Id() int {
+func (c *Client) Id() uint64 {
 	return c.id
 }
 
@@ -533,7 +493,6 @@ func main() {
 
 	c := NewClient(ss, ss[*s], *mode == "f")
 	c.Register(0)
-	c.RegisterDone(0)
 	c.ShareSecret()
 	//c.UploadKeys(0)
 

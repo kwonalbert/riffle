@@ -1,0 +1,152 @@
+syntax = "proto3";
+package lib;
+
+message Datum {
+        bytes datum = 1;
+}
+
+message Data {
+        repeated bytes data = 1;
+}
+
+message Block {
+	bytes block = 1;
+	uint64 round = 2;
+        //id is only attached in the first submit
+	optional uint64 id = 3;
+}
+
+message Blocks {
+        repeated Block blocks = 1;
+}
+
+message Hashes {
+        repeated bytes hashes = 1;
+}
+
+message Request {
+	bytes hash = 1;
+	uint64 round = 2;
+	optional uint64 id = 3;
+}
+
+message Requests {
+        repeated Request requests = 1;
+}
+
+message Point {
+        bytes x = 1;
+}
+
+message Points {
+        repeated bytes xs = 1;
+}
+
+message UpKey {
+        repeated Point c1s = 1;
+        repeated Point c2s = 2;
+	optional uint64 id = 3;
+}
+
+/////////////////////////////////
+//convenience types
+////////////////////////////////
+
+message ClientDH {
+	bytes public = 1;
+	uint64 id = 2;
+}
+
+message ClientMask {
+        bytes mask = 1;
+	uint64 id = 2;
+	uint64 round = 3;
+}
+
+message ClientRegistration {
+	uint64 serverId = 1; //the dedicated server
+	uint64 id = 2;
+}
+
+message ClientBlock {
+	uint64 cid = 1; //client id for the block
+	uint64 sid = 2; //sending server's id
+	Block block = 3;
+}
+
+message RequestArg {
+	uint64 id = 1;
+	uint64 round = 2;
+}
+
+message InternalKey {
+	repeated Points xss = 1;
+        repeated Points yss = 2;
+	uint64 sid = 3;
+
+	repeated Points ybarss = 4;
+	repeated bytes proofs = 5;
+	repeated bytes keys = 6;
+}
+
+message AuxKeyProof {
+	repeated Points origXss = 1;
+	repeated Points origYss = 2;
+	uint64 sid = 3;
+}
+
+message InternalUpload {
+	repeated Block blocks = 1;
+	uint64 sid = 2;
+}
+
+message Empty {
+}
+
+message Bool {
+        bool val = 1;
+}
+
+message UInt {
+        uint64 val = 1;
+}
+
+message RegisterReply {
+        uint64 id = 1;
+        uint64 numClients = 2;
+        repeated bytes pks = 3;
+}
+
+service Riffle {
+        rpc Register(UInt) returns (RegisterReply) {}
+        rpc ShareSecrets(ClientDH) returns (Points) {}
+        rpc UploadKeys(UpKey) returns (Empty) {}
+
+        rpc RequestBlock(Request) returns (Hashes) {}
+
+        rpc UploadBlock(Block) returns (Hashes) {}
+        rpc UploadSmall(Block) returns (Empty) {}
+
+        rpc GetResponse(ClientMask) returns (Datum) {}
+        rpc GetAllResponses(RequestArg) returns (Data) {}
+}
+
+service RiffleInternal {
+        rpc GetPK(Empty) returns (Point) {}
+
+        rpc Register2(ClientRegistration) returns (Empty) {}
+        rpc RegisterDone2(UInt) returns (Empty) {}
+        rpc PutAuxProof(AuxKeyProof) returns (Empty) {}
+        rpc ShareServerKeys(InternalKey) returns (Bool) {}
+
+        rpc RequestBlock2(Request) returns (Empty) {}
+        rpc PutPlainRequests(Requests) returns (Empty) {}
+        rpc ShareServerRequests(Requests) returns (Empty) {}
+
+        rpc UploadBlock2(Block) returns (Empty) {}
+        rpc UploadSmall2(Block) returns (Empty) {}
+        rpc PutPlainBlocks(Blocks) returns (Empty) {}
+        rpc ShareServerBlocks(Blocks) returns (Empty) {}
+
+        rpc PutClientBlock(ClientBlock) returns (Empty) {}
+}
