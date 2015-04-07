@@ -1,5 +1,5 @@
-package client
-//package main
+//package client
+package main
 
 import (
 	"crypto/rand"
@@ -538,6 +538,9 @@ func main() {
 					hash, hashes := c.RequestBlock(wantedArr[r], r)
 					hashes = c.Upload(hashes, r)
 					c.Download(hash, hashes, r)
+					if c.id == 0 && r % 10 == 0 {
+						fmt.Printf("Round %d complete\n", r)
+					}
 					r += MaxRounds
 				}
 			} (r)

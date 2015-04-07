@@ -1,5 +1,5 @@
-package server
-//package main
+//package server
+package main
 
 import (
 	"encoding/binary"
@@ -387,6 +387,12 @@ func (s *Server) shuffleUploads(round uint64) {
 	if profile {
 		fmt.Println("round", round, ". ", s.id, "server shuffle: ", time.Since(t))
 	}
+
+	sum := 0
+	for i := range blocks.Blocks {
+		sum += len(blocks.Blocks[i].Block)
+	}
+	//fmt.Println(round, s.id, "sent: ", sum)
 }
 
 func (s *Server) gatherKeys(_ uint64) {
@@ -658,7 +664,6 @@ func (s *Server) connectServers() {
 		s.conns[i] = conn
 		s.servers[i] = NewRiffleInternalClient(conn)
 	}
-
 	var wg sync.WaitGroup
 	for i := range s.servers {
 		wg.Add(1)
@@ -1040,7 +1045,7 @@ func main() {
 	var memprofile = flag.String("memprofile", "", "write memory profile to this file")
 	var id *int = flag.Int("i", 0, "id [num]")
 	var port1 *int = flag.Int("p1", 8000, "port1 [num]")
-	var port2 *int = flag.Int("p2", 8001, "port1 [num]")
+	var port2 *int = flag.Int("p2", 8001, "port2 [num]")
 	var servers *string = flag.String("s", "", "servers [file]")
 	var numClients *int = flag.Int("n", 0, "num clients [num]")
 	var mode *string = flag.String("m", "", "mode [m for microblogging|f for file sharing]")
@@ -1068,7 +1073,6 @@ func main() {
                 }
                 s.memProf = f
         }
-
 	l1, err := net.Listen("tcp", fmt.Sprintf(":%d", s.port1))
 	if err != nil {
 		panic("Cannot starting listening to the port")
@@ -1091,4 +1095,3 @@ func main() {
 
 	Wait()
 }
-
