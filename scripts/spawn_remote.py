@@ -6,6 +6,7 @@ import time
 node_num = int(sys.argv[1])
 m = int(sys.argv[2])
 n = int(sys.argv[3])
+mode = sys.argv[4]
 
 per_node = 0
 if n % node_num == 0:
@@ -18,8 +19,8 @@ node_name = 'draco%d'
 serv_start = 20
 node_start = 1
 
-server_cmd = "/afs/csail.mit.edu/u/k/kwonal/workspace/gos/bin/server -i %d -n %d -s /afs/csail.mit.edu/u/k/kwonal/workspace/gos/src/afs/servers -cpuprofile cpuprof%d -memprofile memprof%d -m m"
-command = "zsh /afs/csail.mit.edu/u/k/kwonal/workspace/gos/src/afs/spawn_clients.sh %d %d %d %d m"
+server_cmd = "/afs/csail.mit.edu/u/k/kwonal/workspace/gos/bin/server -i %d -n %d -s /afs/csail.mit.edu/u/k/kwonal/workspace/gos/src/afs/servers2 -cpuprofile cpuprof%d -memprofile memprof%d -m " + mode
+command = "zsh /afs/csail.mit.edu/u/k/kwonal/workspace/gos/src/afs/spawn_clients.sh %d %d %d %d " + mode
 
 def spawn(node, c):
     os.system('ssh -p 22 %s "%s"' % (node, c))

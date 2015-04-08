@@ -1,5 +1,5 @@
-package client
-//package main
+//package client
+package main
 
 import (
 	"crypto/rand"
@@ -317,9 +317,9 @@ func (c *Client) RequestBlock(hash []byte, rnd uint64) ([]byte, [][]byte) {
 //Upload
 ////////////////////////////////
 func (c *Client) Upload(hashes [][]byte, rnd uint64) [][]byte {
-	match := []byte{}
 	var name string
 	var offset int64 = -1
+	var hash []byte
 
 	t := time.Now()
 	//TODO: probably replace with hash map mapping hashes to file names
@@ -329,6 +329,7 @@ func (c *Client) Upload(hashes [][]byte, rnd uint64) [][]byte {
 			o, ok := fhashes[string(h)]
 			if ok {
 				offset = o
+				hash = h
 			}
 		}
 		//for now, just do the first one you find
@@ -338,7 +339,7 @@ func (c *Client) Upload(hashes [][]byte, rnd uint64) [][]byte {
 		}
 	}
 
-	match = make([]byte, BlockSize)
+	match := make([]byte, BlockSize)
 	if offset != -1 {
 		f := c.osFiles[name]
 		_, err := f.ReadAt(match, offset)
@@ -349,7 +350,7 @@ func (c *Client) Upload(hashes [][]byte, rnd uint64) [][]byte {
 	if c.id == 0 && profile {
 		fmt.Println(c.id, "file_read:", time.Since(t))
 	}
-	return c.UploadBlock(Block{Block: match, Round: rnd, Id: c.id})
+	return c.UploadBlock(Block{Block: append(match, hash...), Round: rnd, Id: c.id})
 }
 
 func (c *Client) UploadBlock(block Block) [][]byte {
@@ -488,8 +489,9 @@ func (c *Client) UploadPieces(hashes [][]byte, rnd uint64) {
 
 	h := c.suite.Hash()
 	h.Write(match)
+	match = h.Sum(match)
 	if rnd == 0 && debug {
-		fmt.Println(c.id, "uploading", match, h.Sum(nil))
+		fmt.Println(c.id, "uploading", match)
 	}
 
 	//TODO: handle unfound hash..
@@ -570,6 +572,13 @@ func main() {
 			i++
 		}
 
+		// block := make([]byte, BlockSize)
+		// rand.Read(block)
+		// h := c.suite.Hash()
+		// h.Write(block)
+		// block = h.Sum(block)
+		// fmt.Println(block[BlockSize:])
+
 		var r uint64 = 0
 		for ; r < MaxRounds; r++ {
 			wg.Add(1)
@@ -579,6 +588,11 @@ func main() {
 					hash, hashes := c.RequestBlock(wantedArr[r], r)
 					hashes = c.Upload(hashes, r)
 					c.Download(hash, hashes, r)
+					t := time.Now()
+					//hashes := c.UploadBlock(Block{Block: block, Round: r, Id: c.id})
+					if c.id == 0 {
+						fmt.Printf("Round %d: %s\n", r, time.Since(t))
+					}
 					r += MaxRounds
 				}
 			} (r)

@@ -42,7 +42,7 @@ L:
         for _, b := range mask {
                 for j := 0; j < 8; j++ {
                         if b&1 == 1 {
-                                XorWords(response, allBlocks[i].Block, response)
+                                XorWords(response, allBlocks[i].Block[:BlockSize], response)
                         }
                         b >>= 1
                         i++

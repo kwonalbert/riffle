@@ -1,5 +1,5 @@
-package server
-//package main
+//package server
+package main
 
 import (
 	"encoding/binary"
@@ -243,6 +243,9 @@ func (s *Server) shuffleRequests(round uint64) {
 
 	t := time.Now()
 	if s.id == len(s.servers) - 1 {
+		if len(input[0]) != (BlockSize + HashSize) {
+			log.Fatal("size mismatch!")
+		}
 		var wg sync.WaitGroup
 		for _, rpcServer := range s.rpcServers {
 			wg.Add(1)
@@ -275,6 +278,19 @@ func (s *Server) handleResponses(round uint64) {
 
 	if s.FSMode {
 		t := time.Now()
+
+		for i := range allBlocks {
+			s.rounds[rnd].upHashes[i] = allBlocks[i].Block[BlockSize:]
+		}
+
+		for i := range s.rounds[rnd].upHashesRdy {
+			if s.clientMap[i] != s.id {
+				continue
+			}
+			go func(i int) {
+				s.rounds[rnd].upHashesRdy[i] <- true
+			} (i)
+		}
 
 		var wg sync.WaitGroup
 		for i := 0; i < s.totalClients; i++ {
@@ -309,6 +325,7 @@ func (s *Server) handleResponses(round uint64) {
 			fmt.Println(s.id, "handling_resp:", time.Since(t))
 		}
 	}
+
 	for i := range s.rounds[rnd].blocksRdy {
 		if s.clientMap[i] != s.id {
 			continue
@@ -849,23 +866,6 @@ func (s *Server) PutPlainBlocks(bs *[]Block, _ *int) error {
 	blocks := *bs
 	round := blocks[0].Round % MaxRounds
 
-	for i := range blocks {
-		h := s.suite.Hash()
-		h.Write(blocks[i].Block)
-		s.rounds[round].upHashes[i] = h.Sum(nil)
-	}
-
-	if s.FSMode {
-		for i := range s.rounds[round].upHashesRdy {
-			if s.clientMap[i] != s.id {
-				continue
-			}
-			go func(i int, round uint64) {
-				s.rounds[round].upHashesRdy[i] <- true
-			} (i, round)
-		}
-	}
-
 	s.rounds[round].dblocksChan <- blocks
 
 	return nil
@@ -1092,4 +1092,3 @@ func main() {
 
 	Wait()
 }
-
