@@ -4,12 +4,12 @@ package main
 import (
 	"flag"
 	"fmt"
-	"os"
 	"log"
 	"net/rpc"
+	"os"
 	"sync"
 
-	. "afs/lib" //types and utils
+	. "riffle/lib" //types and utils
 
 	"github.com/dedis/crypto/abstract"
 	"github.com/dedis/crypto/cipher"
@@ -18,38 +18,38 @@ import (
 //assumes RPC model of communication
 
 type Client struct {
-	id              int //client id
-	servers         []string //all servers
-	rpcServers      []*rpc.Client
-	myServer        int //server downloading from (using PIR)
-	totalClients    int
+	id           int      //client id
+	servers      []string //all servers
+	rpcServers   []*rpc.Client
+	myServer     int //server downloading from (using PIR)
+	totalClients int
 
-	files           map[string]*File //files in hand; filename to hashes
-	osFiles         map[string]*os.File
+	files   map[string]*File //files in hand; filename to hashes
+	osFiles map[string]*os.File
 
-	testPieces      map[string][]byte //used only for testing
+	testPieces map[string][]byte //used only for testing
 
 	//crypto
-	g               abstract.Group
-	rand            cipher.Stream
-	pks             []abstract.Point //server public keys
+	g    abstract.Group
+	rand cipher.Stream
+	pks  []abstract.Point //server public keys
 
-	reqRound        int
-	reqHashRound    int
-	upRound         int
-	downRound       int
+	reqRound     int
+	reqHashRound int
+	upRound      int
+	downRound    int
 
-	reqLock         *sync.Mutex
-	reqHashLock     *sync.Mutex
-	upLock          *sync.Mutex
-	downLock        *sync.Mutex
+	reqLock     *sync.Mutex
+	reqHashLock *sync.Mutex
+	upLock      *sync.Mutex
+	downLock    *sync.Mutex
 
-	ephKeys         []abstract.Point
+	ephKeys []abstract.Point
 
 	//downloading
-	dhashes         chan []byte //hash to download (per round)
-	masks           [][]byte //masks used
-	secrets         [][]byte //secret for data
+	dhashes chan []byte //hash to download (per round)
+	masks   [][]byte    //masks used
+	secrets [][]byte    //secret for data
 }
 
 func NewClient(servers []string, myServer string) *Client {
@@ -79,7 +79,7 @@ func NewClient(servers []string, myServer string) *Client {
 				log.Fatal("Couldn't get server's pk:", err)
 			}
 			pks[i] = UnmarshalPoint(pk)
-		} (i, rpcServer)
+		}(i, rpcServer)
 	}
 	wg.Wait()
 
@@ -90,43 +90,43 @@ func NewClient(servers []string, myServer string) *Client {
 		secrets[i] = make([]byte, SecretSize)
 	}
 
-
 	//id comes from servers
-	c := Client {
-		id:             -1,
-		servers:        servers,
-		rpcServers:     rpcServers,
-		myServer:       myServerIdx,
-		totalClients:   -1,
+	c := Client{
+		id:           -1,
+		servers:      servers,
+		rpcServers:   rpcServers,
+		myServer:     myServerIdx,
+		totalClients: -1,
 
-		files:          make(map[string]*File),
-		osFiles:        make(map[string]*os.File),
+		files:   make(map[string]*File),
+		osFiles: make(map[string]*os.File),
 
-		testPieces:     make(map[string][]byte),
+		testPieces: make(map[string][]byte),
 
-		g:              Suite,
-		rand:           Suite.Cipher(abstract.RandomKey),
-		pks:            pks,
+		g:    Suite,
+		rand: Suite.Cipher(abstract.RandomKey),
+		pks:  pks,
 
-		reqRound:       0,
-		reqHashRound:   0,
-		upRound:        0,
-		downRound:      0,
+		reqRound:     0,
+		reqHashRound: 0,
+		upRound:      0,
+		downRound:    0,
 
-		reqLock:        new(sync.Mutex),
-		reqHashLock:    new(sync.Mutex),
-		upLock:         new(sync.Mutex),
-		downLock:       new(sync.Mutex),
+		reqLock:     new(sync.Mutex),
+		reqHashLock: new(sync.Mutex),
+		upLock:      new(sync.Mutex),
+		downLock:    new(sync.Mutex),
 
-		ephKeys:        make([]abstract.Point, len(servers)),
+		ephKeys: make([]abstract.Point, len(servers)),
 
-		dhashes:        make(chan []byte, MaxRounds),
-		masks:          masks,
-		secrets:        secrets,
+		dhashes: make(chan []byte, MaxRounds),
+		masks:   masks,
+		secrets: secrets,
 	}
 
 	return &c
 }
+
 /////////////////////////////////
 //Registration and Setup
 ////////////////////////////////
@@ -165,13 +165,13 @@ func (c *Client) ShareSecret() {
 		go func(i int, rpcServer *rpc.Client) {
 			defer wg.Done()
 
-			cs1 := ClientDH {
+			cs1 := ClientDH{
 				Public: MarshalPoint(public1),
-				Id: c.id,
+				Id:     c.id,
 			}
-			cs2 := ClientDH {
+			cs2 := ClientDH{
 				Public: MarshalPoint(public2),
-				Id: c.id,
+				Id:     c.id,
 			}
 
 			servPub1 := make([]byte, SecretSize)
@@ -186,7 +186,7 @@ func (c *Client) ShareSecret() {
 			c.masks[i] = MarshalPoint(c.g.Point().Mul(UnmarshalPoint(servPub1), secret1))
 			c.secrets[i] = MarshalPoint(c.g.Point().Mul(UnmarshalPoint(servPub2), secret2))
 			c.ephKeys[i] = UnmarshalPoint(servPub3)
-		} (i, rpcServer)
+		}(i, rpcServer)
 	}
 	wg.Wait()
 }
@@ -304,12 +304,12 @@ func (c *Client) UploadBlock(block Block) {
 
 	dh1, dh2 := EncryptPoint(c.g, public, c.pks[0])
 	//fmt.Println(c.id, "client pt", c.upRound, MarshalPoint(public))
-	upblock := UpBlock {
-		HC1: make([][]byte, len(hc1s)),
-		HC2: make([][]byte, len(hc2s)),
-		DH1: MarshalPoint(dh1),
-		DH2: MarshalPoint(dh2),
-		BC:  bs,
+	upblock := UpBlock{
+		HC1:   make([][]byte, len(hc1s)),
+		HC2:   make([][]byte, len(hc2s)),
+		DH1:   MarshalPoint(dh1),
+		DH2:   MarshalPoint(dh2),
+		BC:    bs,
 		Round: block.Round,
 	}
 
@@ -323,7 +323,6 @@ func (c *Client) UploadBlock(block Block) {
 		log.Fatal("Couldn't upload a block: ", err)
 	}
 }
-
 
 /////////////////////////////////
 //Download
@@ -368,7 +367,7 @@ func (c *Client) DownloadSlot(slot int) []byte {
 	//one response includes all the secrets
 	response := make([]byte, BlockSize)
 	secretsXor := Xors(c.secrets)
-	cMask := ClientMask {Mask: mask, Id: c.id, Round: c.downRound}
+	cMask := ClientMask{Mask: mask, Id: c.id, Round: c.downRound}
 	err := c.rpcServers[c.myServer].Call("Server.GetResponse", cMask, &response)
 	if err != nil {
 		log.Fatal("Could not get response: ", err)
@@ -448,14 +447,13 @@ func (c *Client) ClearHashes() {
 	c.rpcServers[c.myServer].Call("Server.GetUpHashes", c.id, nil)
 }
 
-
 /////////////////////////////////
 //MAIN
 /////////////////////////////////
 func main() {
 	var wf *string = flag.String("w", "", "wanted [file]") //torrent file
-	var f *string = flag.String("f", "", "file [file]") //file in possession
-	var s *int = flag.Int("i", 0, "server [id]") //my server id
+	var f *string = flag.String("f", "", "file [file]")    //file in possession
+	var s *int = flag.Int("i", 0, "server [id]")           //my server id
 	var servers *string = flag.String("s", "", "servers [file]")
 	flag.Parse()
 
@@ -488,39 +486,39 @@ func main() {
 
 	var wg sync.WaitGroup
 	//for {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for k, _ := range wanted {
-				c.RequestBlock(c.id, []byte(k))
-				fmt.Println(c.id, "Requested", c.reqRound)
-			}
-		} ()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for k, _ := range wanted {
+			c.RequestBlock(c.id, []byte(k))
+			fmt.Println(c.id, "Requested", c.reqRound)
+		}
+	}()
 
-		//wg.Add(1)
-		go func() {
-			//defer wg.Done()
-			for {
-				c.Upload()
-				fmt.Println(c.id, "Uploaded", c.upRound)
-			}
-		} ()
+	//wg.Add(1)
+	go func() {
+		//defer wg.Done()
+		for {
+			c.Upload()
+			fmt.Println(c.id, "Uploaded", c.upRound)
+		}
+	}()
 
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for _, _ = range wanted {
-				res := c.Download()
-				h := Suite.Hash()
-				h.Write(res)
-				hash := h.Sum(nil)
-				offset := wanted[string(hash)]
-				nf.WriteAt(res, offset)
-				fmt.Println(c.id, "Downloaded", c.downRound)
-			}
-		}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for _, _ = range wanted {
+			res := c.Download()
+			h := Suite.Hash()
+			h.Write(res)
+			hash := h.Sum(nil)
+			offset := wanted[string(hash)]
+			nf.WriteAt(res, offset)
+			fmt.Println(c.id, "Downloaded", c.downRound)
+		}
+	}()
 
-		wg.Wait()
+	wg.Wait()
 	//}
 
 }

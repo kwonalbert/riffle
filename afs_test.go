@@ -5,14 +5,14 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"time"
 	"sync"
+	"time"
 
 	"testing"
 
-	. "afs/server"
-	. "afs/client"
-	. "afs/lib"
+	. "riffle/client"
+	. "riffle/lib"
+	. "riffle/server"
 )
 
 var servers []*Server = nil
@@ -79,7 +79,7 @@ func TestRounds(t *testing.T) {
 					// 	fmt.Println("requested: ", i)
 					// }
 				}
-			} (c)
+			}(c)
 
 			wg2.Add(1)
 			go func(c int) {
@@ -90,8 +90,7 @@ func TestRounds(t *testing.T) {
 					// 	fmt.Println("uploaded: ", i)
 					// }
 				}
-			} (c)
-
+			}(c)
 
 			wg2.Add(1)
 			go func(c int) {
@@ -103,17 +102,17 @@ func TestRounds(t *testing.T) {
 						log.Fatal("Didn't get all data back")
 					}
 				}
-			} (c)
+			}(c)
 
 			wg2.Wait()
-		} (c)
+		}(c)
 	}
 	wg.Wait()
 }
 
 func TestMain(m *testing.M) {
 	servers, clients = setup(NumServers, NumClients)
-	time.Sleep(1000*time.Millisecond)
+	time.Sleep(1000 * time.Millisecond)
 
 	os.Exit(m.Run())
 }
