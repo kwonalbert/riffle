@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	. "riffle/lib" //types and utils
+	. "github.com/kwonalbert/riffle/lib" //types and utils
 
 	"github.com/dedis/crypto/abstract"
 	"github.com/dedis/crypto/edwards"
@@ -32,37 +32,37 @@ type Client struct {
 	myServer     int //server downloading from (using PIR)
 	totalClients int
 
-	FSMode          bool //true for microblogging, false for file sharing
+	FSMode bool //true for microblogging, false for file sharing
 
-	files           map[string]*File //files in hand; filename to hashes
-	osFiles         map[string]*os.File
+	files   map[string]*File //files in hand; filename to hashes
+	osFiles map[string]*os.File
 
 	testPieces map[string][]byte //used only for testing
 
 	//crypto
-	suite           abstract.Suite
-	g               abstract.Group
-	pks             []abstract.Point //server public keys
+	suite abstract.Suite
+	g     abstract.Group
+	pks   []abstract.Point //server public keys
 
-	keys            [][]byte
-	ephKeys         []abstract.Point
+	keys    [][]byte
+	ephKeys []abstract.Point
 
 	//downloading
-	dhashes         chan []byte //hash to download (per round)
-	maskss          [][][]byte //masks used
-	secretss        [][][]byte //secret for data
+	dhashes  chan []byte //hash to download (per round)
+	maskss   [][][]byte  //masks used
+	secretss [][][]byte  //secret for data
 
-	rounds          []*Round
+	rounds []*Round
 }
 
 type Round struct {
-	reqLock         *sync.Mutex
-	upLock          *sync.Mutex
-	downLock        *sync.Mutex
+	reqLock  *sync.Mutex
+	upLock   *sync.Mutex
+	downLock *sync.Mutex
 
-	reqHashesChan   chan [][]byte
-	dhashChan       chan []byte
-	upHashesChan    chan [][]byte
+	reqHashesChan chan [][]byte
+	dhashChan     chan []byte
+	upHashesChan  chan [][]byte
 }
 
 func NewClient(servers []string, myServer string, FSMode bool) *Client {
@@ -93,7 +93,7 @@ func NewClient(servers []string, myServer string, FSMode bool) *Client {
 				log.Fatal("Couldn't get server's pk:", err)
 			}
 			pks[i] = UnmarshalPoint(suite, pk)
-		} (i, rpcServer)
+		}(i, rpcServer)
 	}
 	wg.Wait()
 
@@ -101,13 +101,13 @@ func NewClient(servers []string, myServer string, FSMode bool) *Client {
 
 	for i := range rounds {
 		r := Round{
-			reqLock:        new(sync.Mutex),
-			upLock:         new(sync.Mutex),
-			downLock:       new(sync.Mutex),
+			reqLock:  new(sync.Mutex),
+			upLock:   new(sync.Mutex),
+			downLock: new(sync.Mutex),
 
-			reqHashesChan:  make(chan [][]byte),
-			dhashChan:      make(chan []byte),
-			upHashesChan:   make(chan [][]byte),
+			reqHashesChan: make(chan [][]byte),
+			dhashChan:     make(chan []byte),
+			upHashesChan:  make(chan [][]byte),
 		}
 		rounds[i] = &r
 	}
@@ -120,25 +120,25 @@ func NewClient(servers []string, myServer string, FSMode bool) *Client {
 		myServer:     myServerIdx,
 		totalClients: -1,
 
-		FSMode:         FSMode,
+		FSMode: FSMode,
 
-		files:          make(map[string]*File),
-		osFiles:        make(map[string]*os.File),
+		files:   make(map[string]*File),
+		osFiles: make(map[string]*os.File),
 
 		testPieces: make(map[string][]byte),
 
-		suite:          suite,
-		g:              suite,
-		pks:            pks,
+		suite: suite,
+		g:     suite,
+		pks:   pks,
 
-		keys:           make([][]byte, len(servers)),
-		ephKeys:        make([]abstract.Point, len(servers)),
+		keys:    make([][]byte, len(servers)),
+		ephKeys: make([]abstract.Point, len(servers)),
 
-		dhashes:        make(chan []byte, MaxRounds),
-		maskss:         nil,
-		secretss:       nil,
+		dhashes:  make(chan []byte, MaxRounds),
+		maskss:   nil,
+		secretss: nil,
 
-		rounds:         rounds,
+		rounds: rounds,
 	}
 
 	return &c
@@ -198,10 +198,10 @@ func (c *Client) UploadKeys(idx int) {
 		c1s[i], c2s[i] = EncryptKey(c.g, keyPts[i], c.pks[:i+1])
 	}
 
-	upkey := UpKey {
+	upkey := UpKey{
 		C1s: make([][]byte, len(c1s)),
 		C2s: make([][]byte, len(c1s)),
-		Id: c.id,
+		Id:  c.id,
 	}
 
 	for i := range c1s {
@@ -231,13 +231,13 @@ func (c *Client) ShareSecret() {
 
 	//generate share secrets via Diffie-Hellman w/ all servers
 	//one used for masks, one used for one-time pad
-	cs1 := ClientDH {
+	cs1 := ClientDH{
 		Public: MarshalPoint(public1),
-		Id: c.id,
+		Id:     c.id,
 	}
-	cs2 := ClientDH {
+	cs2 := ClientDH{
 		Public: MarshalPoint(public2),
-		Id: c.id,
+		Id:     c.id,
 	}
 
 	masks := make([][]byte, len(c.servers))
@@ -263,7 +263,7 @@ func (c *Client) ShareSecret() {
 			secrets[i] = MarshalPoint(c.g.Point().Mul(UnmarshalPoint(c.suite, servPub2), secret2))
 			//secrets[i] = make([]byte, SecretSize)
 			c.ephKeys[i] = UnmarshalPoint(c.suite, servPub3)
-		} (i, rpcServer, cs1, cs2)
+		}(i, rpcServer, cs1, cs2)
 	}
 	wg.Wait()
 
@@ -423,7 +423,7 @@ func (c *Client) DownloadSlot(slot int, rnd uint64) []byte {
 	//one response includes all the secrets
 	response := make([]byte, BlockSize)
 	secretsXor := Xors(c.secretss[round])
-	cMask := ClientMask {Mask: mask, Id: c.id, Round: rnd}
+	cMask := ClientMask{Mask: mask, Id: c.id, Round: rnd}
 
 	t := time.Now()
 	err := c.rpcServers[c.myServer].Call("Server.GetResponse", cMask, &response)
@@ -434,7 +434,6 @@ func (c *Client) DownloadSlot(slot int, rnd uint64) []byte {
 	if c.id == 0 && profile {
 		fmt.Println(c.id, "down_network_total:", time.Since(t))
 	}
-
 
 	Xor(secretsXor, response)
 
@@ -564,7 +563,7 @@ func main() {
 		// 	log.Fatal("Failed creating dest file", err)
 		// }
 
-		wantedArr := make([][]byte, len(wanted) + (len(wanted) % MaxRounds))
+		wantedArr := make([][]byte, len(wanted)+(len(wanted)%MaxRounds))
 		i := 0
 		for k, _ := range wanted {
 			wantedArr[i] = []byte(k)
@@ -581,9 +580,9 @@ func main() {
 		var r uint64 = 0
 		for ; r < MaxRounds; r++ {
 			wg.Add(1)
-			go func (r uint64) {
+			go func(r uint64) {
 				defer wg.Done()
-				for ; r < uint64(len(wantedArr)); {
+				for r < uint64(len(wantedArr)) {
 					hash, hashes := c.RequestBlock(wantedArr[r], r)
 					hashes = c.Upload(hashes, r)
 					c.Download(hash, hashes, r)
@@ -594,23 +593,23 @@ func main() {
 					}
 					r += MaxRounds
 				}
-			} (r)
+			}(r)
 		}
 		wg.Wait()
 	} else {
 		var r uint64 = 0
 		for ; r < MaxRounds; r++ {
 			wg.Add(1)
-			go func (r uint64) {
+			go func(r uint64) {
 				defer wg.Done()
-				for ; r < MaxRounds*3; {
+				for r < MaxRounds*3 {
 					block := make([]byte, BlockSize)
 					rand.Read(block)
 					c.UploadSmall(Block{Block: block, Round: r, Id: c.id})
 					c.DownloadAll(r)
 					r += MaxRounds
 				}
-			} (r)
+			}(r)
 		}
 		wg.Wait()
 	}

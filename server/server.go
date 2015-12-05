@@ -16,7 +16,7 @@ import (
 
 	"time"
 
-	. "afs/lib" //types and utils
+	. "github.com/kwonalbert/riffle/lib" //types and utils
 
 	"github.com/dedis/crypto/abstract"
 	"github.com/dedis/crypto/edwards"
@@ -33,50 +33,50 @@ var debug = false
 
 //any variable/func with 2: similar object as s-c but only s-s
 type Server struct {
-	port1           int
-	port2           int
-	id              int
-	servers         []string //other servers
-	rpcServers      []*rpc.Client
-	regLock         []*sync.Mutex //registration mutex
-	regChan         chan bool
-	regDone         chan bool
-	connectDone     chan bool
-	running         chan bool
-	secretLock      *sync.Mutex
+	port1       int
+	port2       int
+	id          int
+	servers     []string //other servers
+	rpcServers  []*rpc.Client
+	regLock     []*sync.Mutex //registration mutex
+	regChan     chan bool
+	regDone     chan bool
+	connectDone chan bool
+	running     chan bool
+	secretLock  *sync.Mutex
 
-	FSMode          bool //true for microblogging, false for file sharing
+	FSMode bool //true for microblogging, false for file sharing
 
 	//crypto
-	suite           abstract.Suite
-	g               abstract.Group
-	sk              abstract.Secret //secret and public elgamal key
-	pk              abstract.Point
-	pkBin           []byte
-	pks             []abstract.Point //all servers pks
-	nextPks         []abstract.Point
-	nextPksBin      [][]byte
-	ephSecret       abstract.Secret
+	suite      abstract.Suite
+	g          abstract.Group
+	sk         abstract.Secret //secret and public elgamal key
+	pk         abstract.Point
+	pkBin      []byte
+	pks        []abstract.Point //all servers pks
+	nextPks    []abstract.Point
+	nextPksBin [][]byte
+	ephSecret  abstract.Secret
 
 	//used during key shuffle
-	pi              []int
-	keys            [][]byte
-	keysRdy         chan bool
-	auxProofChan    []chan AuxKeyProof
-	keyUploadChan   chan UpKey
-	keyShuffleChan  chan InternalKey //collect all uploads together
+	pi             []int
+	keys           [][]byte
+	keysRdy        chan bool
+	auxProofChan   []chan AuxKeyProof
+	keyUploadChan  chan UpKey
+	keyShuffleChan chan InternalKey //collect all uploads together
 
 	//clients
-	clientMap       map[int]int //maps clients to dedicated server
-	numClients      int //#clients connect here
-	totalClients    int //total number of clients (sum of all servers)
-	maskss          [][][]byte //clients' masks for PIR
-	secretss        [][][]byte //shared secret used to xor
+	clientMap    map[int]int //maps clients to dedicated server
+	numClients   int         //#clients connect here
+	totalClients int         //total number of clients (sum of all servers)
+	maskss       [][][]byte  //clients' masks for PIR
+	secretss     [][][]byte  //shared secret used to xor
 
 	//all rounds
-	rounds          []*Round
+	rounds []*Round
 
-	memProf         *os.File
+	memProf *os.File
 }
 
 //per round variables
@@ -84,21 +84,21 @@ type Round struct {
 	allBlocks []Block //all blocks store on this server
 
 	//requesting
-	reqChan2        []chan Request
-	requestsChan    chan []Request
-	reqHashes       [][]byte
-	reqHashesRdy    []chan bool
+	reqChan2     []chan Request
+	requestsChan chan []Request
+	reqHashes    [][]byte
+	reqHashesRdy []chan bool
 
 	//uploading
-	ublockChan2     []chan Block
-	shuffleChan     chan []Block
-	upHashesRdy     []chan bool
+	ublockChan2 []chan Block
+	shuffleChan chan []Block
+	upHashesRdy []chan bool
 
 	//downloading
-	upHashes        [][]byte
-	dblocksChan     chan []Block
-	blocksRdy       []chan bool
-	xorsChan        []map[int](chan Block)
+	upHashes    [][]byte
+	dblocksChan chan []Block
+	blocksRdy   []chan bool
+	xorsChan    []map[int](chan Block)
 }
 
 ///////////////////////////////
@@ -119,44 +119,44 @@ func NewServer(port1 int, port2 int, id int, servers []string, FSMode bool) *Ser
 		r := Round{
 			allBlocks: nil,
 
-			reqChan2:       nil,
-			requestsChan:   nil,
-			reqHashes:      nil,
-			reqHashesRdy:   nil,
+			reqChan2:     nil,
+			requestsChan: nil,
+			reqHashes:    nil,
+			reqHashesRdy: nil,
 
-			ublockChan2:    nil,
-			shuffleChan:    make(chan []Block), //collect all uploads together
-			upHashesRdy:    nil,
+			ublockChan2: nil,
+			shuffleChan: make(chan []Block), //collect all uploads together
+			upHashesRdy: nil,
 
-			upHashes:       nil,
-			dblocksChan:    make(chan []Block),
-			blocksRdy:      nil,
-			xorsChan:       make([]map[int](chan Block), len(servers)),
+			upHashes:    nil,
+			dblocksChan: make(chan []Block),
+			blocksRdy:   nil,
+			xorsChan:    make([]map[int](chan Block), len(servers)),
 		}
 		rounds[i] = &r
 	}
 
 	s := Server{
-		port1:          port1,
-		port2:          port2,
-		id:             id,
-		servers:        servers,
-		regLock:        []*sync.Mutex{new(sync.Mutex), new(sync.Mutex)},
-		regChan:        make(chan bool, TotalClients),
-		regDone:        make(chan bool),
-		connectDone:    make(chan bool),
-		running:        make(chan bool),
-		secretLock:     new(sync.Mutex),
+		port1:       port1,
+		port2:       port2,
+		id:          id,
+		servers:     servers,
+		regLock:     []*sync.Mutex{new(sync.Mutex), new(sync.Mutex)},
+		regChan:     make(chan bool, TotalClients),
+		regDone:     make(chan bool),
+		connectDone: make(chan bool),
+		running:     make(chan bool),
+		secretLock:  new(sync.Mutex),
 
-		suite:          suite,
-		g:              suite,
-		sk:             sk,
-		pk:             pk,
-		pkBin:          pkBin,
-		pks:            make([]abstract.Point, len(servers)),
-		nextPks:        make([]abstract.Point, len(servers)),
-		nextPksBin:     make([][]byte, len(servers)),
-		ephSecret:      ephSecret,
+		suite:      suite,
+		g:          suite,
+		sk:         sk,
+		pk:         pk,
+		pkBin:      pkBin,
+		pks:        make([]abstract.Point, len(servers)),
+		nextPks:    make([]abstract.Point, len(servers)),
+		nextPksBin: make([][]byte, len(servers)),
+		ephSecret:  ephSecret,
 
 		pi:             nil,
 		keys:           nil,
@@ -165,17 +165,17 @@ func NewServer(port1 int, port2 int, id int, servers []string, FSMode bool) *Ser
 		keyUploadChan:  nil,
 		keyShuffleChan: make(chan InternalKey),
 
-		clientMap:      make(map[int]int),
-		numClients:     0,
-		totalClients:   0,
-		maskss:         nil,
-		secretss:       nil,
+		clientMap:    make(map[int]int),
+		numClients:   0,
+		totalClients: 0,
+		maskss:       nil,
+		secretss:     nil,
 
-		rounds:         rounds,
+		rounds: rounds,
 
-		FSMode:         FSMode,
+		FSMode: FSMode,
 
-		memProf:        nil,
+		memProf: nil,
 	}
 
 	for i := range s.auxProofChan {
@@ -216,7 +216,7 @@ func (s *Server) gatherRequests(round uint64) {
 			req := <-s.rounds[rnd].reqChan2[i]
 			req.Id = 0
 			allReqs[i] = req
-		} (i)
+		}(i)
 	}
 	wg.Wait()
 
@@ -241,7 +241,7 @@ func (s *Server) shuffleRequests(round uint64) {
 	}
 
 	t := time.Now()
-	if s.id == len(s.servers) - 1 {
+	if s.id == len(s.servers)-1 {
 		if len(input[0]) != (BlockSize + HashSize) {
 			log.Fatal("size mismatch!")
 		}
@@ -254,7 +254,7 @@ func (s *Server) shuffleRequests(round uint64) {
 				if err != nil {
 					log.Fatal("Failed uploading shuffled and decoded reqs: ", err)
 				}
-			} (rpcServer)
+			}(rpcServer)
 		}
 		wg.Wait()
 	} else {
@@ -288,7 +288,7 @@ func (s *Server) handleResponses(round uint64) {
 			}
 			go func(i int) {
 				s.rounds[rnd].upHashesRdy[i] <- true
-			} (i)
+			}(i)
 		}
 
 		var wg sync.WaitGroup
@@ -304,10 +304,10 @@ func (s *Server) handleResponses(round uint64) {
 				sha3.ShakeSum256(s.secretss[r][i], s.secretss[r][i])
 				sha3.ShakeSum256(s.maskss[r][i], s.maskss[r][i])
 				//fmt.Println(s.id, round, "mask", i, s.maskss[i])
-				cb := ClientBlock {
+				cb := ClientBlock{
 					CId: i,
 					SId: s.id,
-					Block: Block {
+					Block: Block{
 						Block: res,
 						Round: round,
 					},
@@ -316,7 +316,7 @@ func (s *Server) handleResponses(round uint64) {
 				if err != nil {
 					log.Fatal("Couldn't put block: ", err)
 				}
-			} (i, s.rpcServers[s.clientMap[i]], rnd)
+			}(i, s.rpcServers[s.clientMap[i]], rnd)
 		}
 		wg.Wait()
 
@@ -331,7 +331,7 @@ func (s *Server) handleResponses(round uint64) {
 		}
 		go func(i int, round uint64) {
 			s.rounds[rnd].blocksRdy[i] <- true
-		} (i, round)
+		}(i, round)
 	}
 }
 
@@ -341,12 +341,12 @@ func (s *Server) gatherUploads(round uint64) {
 	var wg sync.WaitGroup
 	for i := 0; i < s.totalClients; i++ {
 		wg.Add(1)
-		go func (i int) {
+		go func(i int) {
 			defer wg.Done()
 			block := <-s.rounds[rnd].ublockChan2[i]
 			block.Id = 0
 			allBlocks[i] = block
-		} (i)
+		}(i)
 	}
 	wg.Wait()
 
@@ -372,7 +372,7 @@ func (s *Server) shuffleUploads(round uint64) {
 
 	t := time.Now()
 
-	if s.id == len(s.servers) - 1 {
+	if s.id == len(s.servers)-1 {
 		var wg sync.WaitGroup
 		for _, rpcServer := range s.rpcServers {
 			wg.Add(1)
@@ -403,7 +403,7 @@ func (s *Server) gatherKeys(_ uint64) {
 		allKeys[key.Id] = key
 	}
 
-	serversLeft := len(s.servers)-s.id
+	serversLeft := len(s.servers) - s.id
 
 	Xss := make([][][]byte, serversLeft)
 	Yss := make([][][]byte, serversLeft)
@@ -417,13 +417,13 @@ func (s *Server) gatherKeys(_ uint64) {
 		}
 	}
 
-	ik := InternalKey {
-		Xss: append([][][]byte{nil}, Xss ...),
-		Yss: append([][][]byte{nil}, Yss ...),
+	ik := InternalKey{
+		Xss: append([][][]byte{nil}, Xss...),
+		Yss: append([][][]byte{nil}, Yss...),
 		SId: s.id,
 	}
 
-	aux := AuxKeyProof {
+	aux := AuxKeyProof{
 		OrigXss: Xss,
 		OrigYss: Yss,
 		SId:     s.id,
@@ -438,7 +438,7 @@ func (s *Server) gatherKeys(_ uint64) {
 			if err != nil {
 				log.Fatal("Failed uploading shuffled and decoded blocks: ", err)
 			}
-		} (rpcServer)
+		}(rpcServer)
 	}
 	wg.Wait()
 
@@ -448,7 +448,7 @@ func (s *Server) gatherKeys(_ uint64) {
 func (s *Server) shuffleKeys(_ uint64) {
 	keys := <-s.keyShuffleChan
 
-	serversLeft := len(s.servers)-s.id
+	serversLeft := len(s.servers) - s.id
 
 	Xss := make([][]abstract.Point, serversLeft)
 	Yss := make([][]abstract.Point, serversLeft)
@@ -487,11 +487,11 @@ func (s *Server) shuffleKeys(_ uint64) {
 				go func(i int, j int) {
 					defer decWG.Done()
 					decss[i][j] = Decrypt(s.g, Xbarss[i][j], Ybarss[i][j], s.sk)
-				} (i, j)
+				}(i, j)
 			}
 			decWG.Wait()
 
-		} (i, s.nextPks[i])
+		}(i, s.nextPks[i])
 	}
 	shuffleWG.Wait()
 
@@ -500,14 +500,14 @@ func (s *Server) shuffleKeys(_ uint64) {
 		s.keys[i] = MarshalPoint(decss[0][i])
 	}
 
-	ik := InternalKey {
+	ik := InternalKey{
 		Xss: make([][][]byte, serversLeft),
 		Yss: make([][][]byte, serversLeft),
 		SId: s.id,
 
-		Ybarss:  make([][][]byte, serversLeft),
-		Proofs:  prfs,
-		Keys:    make([][]byte, serversLeft),
+		Ybarss: make([][][]byte, serversLeft),
+		Proofs: prfs,
+		Keys:   make([][]byte, serversLeft),
 	}
 
 	for i := range ik.Xss {
@@ -536,7 +536,7 @@ func (s *Server) shuffleKeys(_ uint64) {
 			if err != nil {
 				log.Fatal("Failed uploading shuffled and decoded blocks: ", err)
 			}
-		} (rpcServer)
+		}(rpcServer)
 	}
 	wg.Wait()
 }
@@ -647,7 +647,7 @@ func (s *Server) connectServers() {
 	for i := range rpcServers {
 		var rpcServer *rpc.Client
 		var err error = errors.New("")
-		for ; err != nil ; {
+		for err != nil {
 			if i == s.id { //make a local rpc
 				addr := fmt.Sprintf("127.0.0.1:%d", s.port2)
 				rpcServer, err = rpc.Dial("tcp", addr)
@@ -669,13 +669,13 @@ func (s *Server) connectServers() {
 				log.Fatal("Couldn't get server's pk: ", err)
 			}
 			s.pks[i] = UnmarshalPoint(s.suite, pk)
-		} (i, rpcServer)
+		}(i, rpcServer)
 	}
 	wg.Wait()
 	for i := 0; i < len(s.servers)-s.id; i++ {
 		pk := s.pk
 		for j := 1; j <= i; j++ {
-			pk = s.g.Point().Add(pk, s.pks[s.id + j])
+			pk = s.g.Point().Add(pk, s.pks[s.id+j])
 		}
 		s.nextPks[i] = pk
 		s.nextPksBin[i] = MarshalPoint(pk)
@@ -695,7 +695,7 @@ func (s *Server) GetPK(_ int, pk *[]byte) error {
 	return nil
 }
 
-func (s *Server) UploadKeys(key *UpKey, _*int) error {
+func (s *Server) UploadKeys(key *UpKey, _ *int) error {
 	s.keyUploadChan <- *key
 	return nil
 }
@@ -755,8 +755,8 @@ func (s *Server) ShareServerKeys(ik *InternalKey, correct *bool) error {
 	aux := <-s.auxProofChan[ik.SId]
 	good := s.verifyShuffle(*ik, aux)
 
-	if ik.SId != len(s.servers) - 1 {
-		aux = AuxKeyProof {
+	if ik.SId != len(s.servers)-1 {
+		aux = AuxKeyProof{
 			OrigXss: ik.Xss[1:],
 			OrigYss: ik.Yss[1:],
 			SId:     ik.SId + 1,
@@ -764,13 +764,13 @@ func (s *Server) ShareServerKeys(ik *InternalKey, correct *bool) error {
 		s.auxProofChan[aux.SId] <- aux
 	}
 
-	if ik.SId == len(s.servers) - 1 && s.id == 0 {
+	if ik.SId == len(s.servers)-1 && s.id == 0 {
 		for i := 0; i < s.totalClients; i++ {
-			go func () {
+			go func() {
 				s.keysRdy <- true
-			} ()
+			}()
 		}
-	} else if ik.SId == s.id - 1 {
+	} else if ik.SId == s.id-1 {
 		ik.Ybarss = nil
 		ik.Proofs = nil
 		ik.Keys = nil
@@ -815,7 +815,7 @@ func (s *Server) PutPlainRequests(rs *[]Request, _ *int) error {
 		}
 		go func(i int, round uint64) {
 			s.rounds[round].reqHashesRdy[i] <- true
-		} (i, round)
+		}(i, round)
 	}
 
 	return nil
@@ -951,7 +951,6 @@ func (s *Server) MainLoop() error {
 	return nil
 }
 
-
 func (s *Server) verifyShuffle(ik InternalKey, aux AuxKeyProof) bool {
 	Xss := aux.OrigXss
 	Yss := aux.OrigYss
@@ -998,7 +997,7 @@ func (s *Server) shuffle(input [][]byte, round uint64) {
 			if !good {
 				log.Fatal(round, " check failed:", s.id, i)
 			}
-		} (i)
+		}(i)
 	}
 	aesWG.Wait()
 }
@@ -1018,7 +1017,7 @@ func (s *Server) Keys() [][]byte {
 func runHandler(f func(uint64), rounds uint64) {
 	var r uint64 = 0
 	for ; r < rounds; r++ {
-		go func (r uint64) {
+		go func(r uint64) {
 			for {
 				f(r)
 				r += rounds
@@ -1062,12 +1061,12 @@ func main() {
 	s := NewServer(*port1, *port2, *id, ss, *mode == "f")
 
 	if *memprofile != "" {
-                f, err := os.Create(*memprofile)
-                if err != nil {
-                        log.Fatal(err)
-                }
-                s.memProf = f
-        }
+		f, err := os.Create(*memprofile)
+		if err != nil {
+			log.Fatal(err)
+		}
+		s.memProf = f
+	}
 
 	rpcServer1 := rpc.NewServer()
 	rpcServer2 := rpc.NewServer()
