@@ -5,39 +5,25 @@ type File struct {
 	Hashes          map[string]int64 //maps hash to offset
 }
 
+//NOTE: could be encrypted version of the block
 type Block struct {
-	Hash            []byte
 	Block           []byte
-	Round           int
+	Round           uint64
+
+	Id              int //id is only attached in the first submit
 }
 
-// type UpBlock struct {
-// 	HC1             [][]byte //hashes
-// 	HC2             [][]byte
-// 	BC1             [][]byte //aes encrypted block
-// 	BC2             [][]byte
-// 	Round           int
-// }
-
-//encrypted version of the block
-type UpBlock struct {
-	HC1             [][]byte //hashes
-	HC2             [][]byte
-	DH1             []byte //diffie-hellman ephemeral
-	DH2             []byte
-	BC              []byte //aes encrypted block
-	Round           int
-}
-
-// type Request struct {
-// 	Hash            []byte
-// 	Round           int
-// }
-
-//Dissent model request
 type Request struct {
-	Hash            [][]byte
-	Round           int
+	Hash            []byte
+	Round           uint64
+
+	Id              int
+}
+
+type UpKey struct {
+	C1s             [][]byte
+	C2s             [][]byte
+	Id              int
 }
 
 /////////////////////////////////
@@ -52,17 +38,12 @@ type ClientDH struct {
 type ClientMask struct {
 	Mask            []byte
 	Id              int
-	Round           int
+	Round           uint64
 }
 
 type ClientRegistration struct {
 	ServerId        int //the dedicated server
 	Id              int
-}
-
-type ClientRequest struct {
-	Request        Request
-	Id             int
 }
 
 type ClientBlock struct {
@@ -73,5 +54,26 @@ type ClientBlock struct {
 
 type RequestArg struct {
 	Id              int
-	Round           int
+	Round           uint64
+}
+
+type InternalKey struct {
+	Xss             [][][]byte
+	Yss             [][][]byte
+	SId             int
+
+	Ybarss          [][][]byte
+	Proofs          [][]byte
+	Keys            [][]byte
+}
+
+type AuxKeyProof struct {
+	OrigXss         [][][]byte
+	OrigYss         [][][]byte
+	SId             int
+}
+
+type InternalUpload struct {
+	Blocks          []Block
+	SId             int
 }

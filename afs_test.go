@@ -2,115 +2,142 @@ package afs
 
 import (
 	"crypto/rand"
-	"fmt"
-	"log"
+	//"fmt"
+	//"log"
 	"os"
+	"runtime"
 	"sync"
 	"time"
 
 	"testing"
 
-	. "riffle/client"
-	. "riffle/lib"
-	. "riffle/server"
+	"afs/server"
+	"afs/client"
+	"afs/lib"
+
+	"github.com/dedis/crypto/edwards"
 )
 
-var servers []*Server = nil
-var clients []*Client = nil
+var servers []*server.Server = nil
+var clients []*client.Client = nil
 
-func TestAES(t *testing.T) {
-	testData := make([][]byte, NumClients)
-	for j := range testData {
-		data := make([]byte, BlockSize)
-		rand.Read(data)
-		//data[j] = 1
-		testData[j] = data
-	}
+var ServerAddrs []string = []string{"127.0.0.1:8000", "127.0.0.1:8001"}
+var Suite = edwards.NewAES128SHA256Ed25519(false)
+const NumClients = 3
+const NumServers = 2
 
-	key := make([]byte, SecretSize)
-	rand.Read(key)
-	for i := range testData {
-		enc := CounterAES(key, testData[i])
-		dec := CounterAES(key, enc)
-		for j := range testData[i] {
-			if testData[i][j] != dec[j] {
-				panic("AES Failed!")
-			}
-		}
-	}
-
+func TestSetup(t *testing.T) {
+	//nothing goes on here
 }
 
-func TestRounds(t *testing.T) {
+func TestFileShare(t *testing.T) {
+	for s := range servers {
+		servers[s].FSMode = true
+	}
+	for c := range clients {
+		clients[c].FSMode = true
+	}
+	b := 10
+
+	testData := make([][][]byte, b)
+	wantedArr := make([][][]byte, b)
+	for i := 0; i < b; i++ {
+		testData[i] = make([][]byte, NumClients)
+		wantedArr[i] = make([][]byte, NumClients)
+		for j := range testData[i] {
+			data := make([]byte, lib.BlockSize)
+			rand.Read(data)
+			//data[j] = 1
+			// if i == 0 {
+			// 	fmt.Println("block:", data)
+			// }
+			testData[i][j] = data
+			h := Suite.Hash()
+			h.Write(data)
+			wantedArr[i][j] = h.Sum(nil)
+		}
+		registerBlocks(testData[i])
+	}
+
+	var clientWg sync.WaitGroup
+	for c := range clients {
+		clientWg.Add(1)
+		go func(c int) { //a client
+			defer clientWg.Done()
+			var wg sync.WaitGroup
+			var r uint64 = 0
+			for ; r < lib.MaxRounds; r++ {
+				wg.Add(1)
+				go func (c int, r uint64) {
+					defer wg.Done()
+					for ; r < uint64(len(wantedArr)); {
+						client := clients[c]
+						hash, hashes := client.RequestBlock(wantedArr[r][c], r)
+						hashes = client.Upload(hashes, r)
+						block := client.Download(hash, hashes, r)
+						lib.Membership(block, testData[r])
+						r += lib.MaxRounds
+					}
+				} (c, r)
+			}
+			wg.Wait()
+		} (c)
+	}
+	clientWg.Wait()
+}
+
+func TestMicroblog(t *testing.T) {
+	for s := range servers {
+		servers[s].FSMode = false
+	}
+	for c := range clients {
+		clients[c].FSMode = false
+	}
 	b := 10
 
 	testData := make([][][]byte, b)
 	for i := 0; i < b; i++ {
 		testData[i] = make([][]byte, NumClients)
 		for j := range testData[i] {
-			data := make([]byte, BlockSize)
+			data := make([]byte, lib.BlockSize)
 			rand.Read(data)
 			//data[j] = 1
+			// if i == 0 {
+			// 	fmt.Println("block:", data)
+			// }
 			testData[i][j] = data
 		}
-
-		registerBlocks(testData[i])
 	}
 
-	var wg sync.WaitGroup
+	var clientWg sync.WaitGroup
 	for c := range clients {
-		wg.Add(1)
+		clientWg.Add(1)
 		go func(c int) { //a client
-			defer wg.Done()
-			var wg2 sync.WaitGroup
-			wg2.Add(1)
-			go func(c int) {
-				defer wg2.Done()
-				for i := 0; i < b; i++ {
-					if clients[c].Id() == 0 {
-						fmt.Println("Round: ", i)
+			defer clientWg.Done()
+			var wg sync.WaitGroup
+			var r uint64 = 0
+			for ; r < lib.MaxRounds; r++ {
+				wg.Add(1)
+				go func (c int, r uint64) {
+					defer wg.Done()
+					for ; r < lib.MaxRounds*3; {
+						client := clients[c]
+						block := make([]byte, lib.BlockSize)
+						rand.Read(block)
+						client.UploadSmall(lib.Block{Block: block, Round: r, Id: client.Id()})
+						client.DownloadAll(r)
+						r += lib.MaxRounds
 					}
-					k := (i + c) % NumClients
-					h := Suite.Hash()
-					h.Write(testData[i][k])
-					hash := h.Sum(nil)
-					clients[c].RequestBlock(c, hash)
-					// if clients[c].Id() == 0 {
-					// 	fmt.Println("requested: ", i)
-					// }
-				}
-			}(c)
-
-			wg2.Add(1)
-			go func(c int) {
-				defer wg2.Done()
-				for i := 0; i < b; i++ {
-					clients[c].UploadPieces()
-					// if clients[c].Id() == 0 {
-					// 	fmt.Println("uploaded: ", i)
-					// }
-				}
-			}(c)
-
-			wg2.Add(1)
-			go func(c int) {
-				defer wg2.Done()
-				for i := 0; i < b; i++ {
-					res := clients[c].Download()
-					if Membership(res, testData[i]) == -1 {
-						fmt.Println("res: ", res)
-						log.Fatal("Didn't get all data back")
-					}
-				}
-			}(c)
-
-			wg2.Wait()
-		}(c)
+				} (c, r)
+			}
+			wg.Wait()
+		} (c)
 	}
-	wg.Wait()
+	clientWg.Wait()
 }
 
 func TestMain(m *testing.M) {
+	runtime.GOMAXPROCS(runtime.NumCPU())
 	servers, clients = setup(NumServers, NumClients)
 	time.Sleep(1000 * time.Millisecond)
 

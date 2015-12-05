@@ -3,18 +3,17 @@ package lib
 import (
 	"bufio"
 	"bytes"
+	"crypto/rand"
 	"errors"
-	goCipher "crypto/cipher"
-	"crypto/aes"
-	"encoding/binary"
+	"fmt"
 	"io/ioutil"
 	"log"
+	"math/big"
 	"sync"
 	"time"
 	"os"
 
 	"github.com/dedis/crypto/abstract"
-	"github.com/dedis/crypto/cipher"
 	"github.com/dedis/crypto/random"
 )
 
@@ -25,39 +24,6 @@ func SetBit(n_int int, b bool, bs []byte) {
 	} else {
 		bs[n/8] &= ^(1 << (n % 8))
 	}
-}
-
-func Xor(r []byte, w []byte) {
-	for j := 0; j < len(w)/len(r); j+=len(r) {
-		for i, b := range r {
-			w[i] ^= b
-		}
-	}
-}
-
-func Xors(bss [][]byte) []byte {
-	n := len(bss[0])
-	x := make([]byte, n)
-	for _, bs := range bss {
-		for i, b := range bs {
-			x[i] ^= b
-		}
-	}
-	return x
-}
-
-func XorsDC(bsss [][][]byte) [][]byte {
-	n := len(bsss)
-	m := len(bsss[0])
-	x := make([][]byte, n)
-	for i, _ := range bsss {
-		y := make([][]byte, m)
-		for j := 0; j < m; j++ {
-			y[j] = bsss[j][i]
-		}
-		x[i] = Xors(y)
-	}
-	return x
 }
 
 func AllZero(xs []byte) bool {
@@ -76,7 +42,7 @@ L:
         for _, b := range mask {
                 for j := 0; j < 8; j++ {
                         if b&1 == 1 {
-                                Xor(allBlocks[i].Block, response)
+                                XorWords(response, allBlocks[i].Block[:BlockSize], response)
                         }
                         b >>= 1
                         i++
@@ -85,31 +51,33 @@ L:
                         }
                 }
         }
-	Xor(secret, response)
+	XorWords(response, secret, response)
         return response
 }
 
-func SliceEquals(X, Y []byte) bool {
-	if len(X) != len(Y) {
-		return false
-	}
-	for i := range X {
-		if X[i] != Y[i] {
-			return false
+func ReverseMap(m map[int]int) map[int][]int {
+	res := make(map[int][]int)
+	for k, v := range m {
+		if res[v] == nil {
+			res[v] = []int{k}
+		} else {
+			res[v] = append(res[v], k)
 		}
 	}
-	return true
+	return res
 }
 
-func GeneratePI(size int, rand cipher.Stream) []int {
+func GeneratePI(size int) []int {
 	// Pick a random permutation
 	pi := make([]int, size)
 	for i := 0; i < size; i++ {	// Initialize a trivial permutation
 		pi[i] = i
 	}
 	for i := size-1; i > 0; i-- {	// Shuffle by random swaps
-		j := int(random.Uint64(rand) % uint64(i+1))
-		if j != i {
+		max := big.NewInt(int64(i+1))
+		jBig, _ := rand.Int(rand.Reader, max)
+		j := jBig.Int64()
+		if j != int64(i) {
 			t := pi[j]
 			pi[j] = pi[i]
 			pi[i] = t
@@ -142,6 +110,21 @@ func Encrypt(g abstract.Group, msg []byte, pks []abstract.Point) ([]abstract.Poi
 	return c1s, c2s
 }
 
+func EncryptKey(g abstract.Group, msgPt abstract.Point, pks []abstract.Point) (abstract.Point, abstract.Point) {
+	k := g.Secret().Pick(random.Stream)
+	c1 := g.Point().Mul(nil, k)
+	var c2 abstract.Point = nil
+	for _, pk := range pks {
+		if c2 == nil {
+			c2 = g.Point().Mul(pk, k)
+		} else {
+			c2 = c2.Add(c2, g.Point().Mul(pk, k))
+		}
+	}
+	c2 = c2.Add(c2, msgPt)
+	return c1, c2
+}
+
 func EncryptPoint(g abstract.Group, msgPt abstract.Point, pk abstract.Point) (abstract.Point, abstract.Point) {
 	k := g.Secret().Pick(random.Stream)
 	c1 := g.Point().Mul(nil, k)
@@ -152,23 +135,6 @@ func EncryptPoint(g abstract.Group, msgPt abstract.Point, pk abstract.Point) (ab
 
 func Decrypt(g abstract.Group, c1 abstract.Point, c2 abstract.Point, sk abstract.Secret) abstract.Point {
 	return g.Point().Sub(c2, g.Point().Mul(c1, sk))
-}
-
-func CounterAES(key []byte, block []byte) []byte {
-	aesCipher, err := aes.NewCipher(key)
-	if err != nil {
-		log.Fatal("Could not create encryptor")
-	}
-
-	ciphertext := make([]byte, len(block))
-	var counter uint64 = 0
-	iv := make([]byte, aes.BlockSize)
-	binary.PutUvarint(iv, counter)
-
-	stream := goCipher.NewCTR(aesCipher, iv)
-	stream.XORKeyStream(ciphertext, block)
-
-	return ciphertext
 }
 
 func Membership(res []byte, set [][]byte) int {
@@ -193,9 +159,9 @@ func MarshalPoint(pt abstract.Point) []byte {
 	return ptByte
 }
 
-func UnmarshalPoint(ptByte []byte) abstract.Point {
+func UnmarshalPoint(suite abstract.Suite, ptByte []byte) abstract.Point {
 	buf := bytes.NewBuffer(ptByte)
-	pt := Suite.Point()
+	pt := suite.Point()
 	pt.UnmarshalFrom(buf)
 	return pt
 }
@@ -206,9 +172,21 @@ func Wait() {
 	w.Wait()
 }
 
+func SliceEquals(X, Y []byte) bool {
+	if len(X) != len(Y) {
+		return false
+	}
+	for i := range X {
+		if X[i] != Y[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func TimeTrack(start time.Time, name string) {
 	elapsed := time.Since(start)
-	log.Printf("%s took %s", name, elapsed)
+	fmt.Println(name, " took ", elapsed)
 }
 
 func NewDesc(path string) (map[string]int64, error) {
@@ -235,13 +213,14 @@ func NewDesc(path string) (map[string]int64, error) {
 		if err != nil {
 			log.Fatal("Failed reading file", err)
 		}
+		//fmt.Println("hash", hash, "to", i * BlockSize)
 		hashes[string(hash)] = int64(i * BlockSize)
 	}
 
 	return hashes, nil
 }
 
-func NewFile(path string) (*File, error) {
+func NewFile(suite abstract.Suite, path string) (*File, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		log.Fatal("Failed opening file", path, err)
@@ -265,7 +244,7 @@ func NewFile(path string) (*File, error) {
 		if err != nil {
 			log.Fatal("Failed reading file", err)
 		}
-		h := Suite.Hash()
+		h := suite.Hash()
 		h.Write(tmp)
 		x.Hashes[string(h.Sum(nil))] = int64((i * BlockSize))
 	}
