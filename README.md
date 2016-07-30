@@ -82,7 +82,7 @@ localhost, by running
 * mode: 'm' for microblogging test, and 'f' for file sharing test
 
 * file_dir: where the files are, if running file sharing test. Should
- be the same as <dst_dir> for gen_file script.
+ be the same as dst_dir for gen_file script.
 
 
 ### Running remote test
