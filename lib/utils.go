@@ -9,9 +9,9 @@ import (
 	"io/ioutil"
 	"log"
 	"math/big"
+	"os"
 	"sync"
 	"time"
-	"os"
 
 	"github.com/dedis/crypto/abstract"
 	"github.com/dedis/crypto/random"
@@ -37,22 +37,22 @@ func AllZero(xs []byte) bool {
 
 func ComputeResponse(allBlocks []Block, mask []byte, secret []byte) []byte {
 	response := make([]byte, BlockSize)
-        i := 0
+	i := 0
 L:
-        for _, b := range mask {
-                for j := 0; j < 8; j++ {
-                        if b&1 == 1 {
-                                XorWords(response, allBlocks[i].Block[:BlockSize], response)
-                        }
-                        b >>= 1
-                        i++
-                        if i >= len(allBlocks) {
-                                break L
-                        }
-                }
-        }
+	for _, b := range mask {
+		for j := 0; j < 8; j++ {
+			if b&1 == 1 {
+				XorWords(response, allBlocks[i].Block[:BlockSize], response)
+			}
+			b >>= 1
+			i++
+			if i >= len(allBlocks) {
+				break L
+			}
+		}
+	}
 	XorWords(response, secret, response)
-        return response
+	return response
 }
 
 func ReverseMap(m map[int]int) map[int][]int {
@@ -70,11 +70,11 @@ func ReverseMap(m map[int]int) map[int][]int {
 func GeneratePI(size int) []int {
 	// Pick a random permutation
 	pi := make([]int, size)
-	for i := 0; i < size; i++ {	// Initialize a trivial permutation
+	for i := 0; i < size; i++ { // Initialize a trivial permutation
 		pi[i] = i
 	}
-	for i := size-1; i > 0; i-- {	// Shuffle by random swaps
-		max := big.NewInt(int64(i+1))
+	for i := size - 1; i > 0; i-- { // Shuffle by random swaps
+		max := big.NewInt(int64(i + 1))
 		jBig, _ := rand.Int(rand.Reader, max)
 		j := jBig.Int64()
 		if j != int64(i) {
@@ -91,9 +91,9 @@ func Encrypt(g abstract.Group, msg []byte, pks []abstract.Point) ([]abstract.Poi
 	c2s := []abstract.Point{}
 	var msgPt abstract.Point
 	remainder := msg
-	for ; len(remainder) != 0 ;  {
+	for len(remainder) != 0 {
 		msgPt, remainder = g.Point().Pick(remainder, random.Stream)
-		k := g.Secret().Pick(random.Stream)
+		k := g.Scalar().Pick(random.Stream)
 		c1 := g.Point().Mul(nil, k)
 		var c2 abstract.Point = nil
 		for _, pk := range pks {
@@ -111,7 +111,7 @@ func Encrypt(g abstract.Group, msg []byte, pks []abstract.Point) ([]abstract.Poi
 }
 
 func EncryptKey(g abstract.Group, msgPt abstract.Point, pks []abstract.Point) (abstract.Point, abstract.Point) {
-	k := g.Secret().Pick(random.Stream)
+	k := g.Scalar().Pick(random.Stream)
 	c1 := g.Point().Mul(nil, k)
 	var c2 abstract.Point = nil
 	for _, pk := range pks {
@@ -126,14 +126,14 @@ func EncryptKey(g abstract.Group, msgPt abstract.Point, pks []abstract.Point) (a
 }
 
 func EncryptPoint(g abstract.Group, msgPt abstract.Point, pk abstract.Point) (abstract.Point, abstract.Point) {
-	k := g.Secret().Pick(random.Stream)
+	k := g.Scalar().Pick(random.Stream)
 	c1 := g.Point().Mul(nil, k)
 	c2 := g.Point().Mul(pk, k)
 	c2 = c2.Add(c2, msgPt)
 	return c1, c2
 }
 
-func Decrypt(g abstract.Group, c1 abstract.Point, c2 abstract.Point, sk abstract.Secret) abstract.Point {
+func Decrypt(g abstract.Group, c1 abstract.Point, c2 abstract.Point, sk abstract.Scalar) abstract.Point {
 	return g.Point().Sub(c2, g.Point().Mul(c1, sk))
 }
 
@@ -200,7 +200,7 @@ func NewDesc(path string) (map[string]int64, error) {
 	if err != nil {
 		return nil, err
 	}
-	if fi.Size() % HashSize != 0 {
+	if fi.Size()%HashSize != 0 {
 		return nil, errors.New(" Misformatted file")
 	}
 	numHashes := fi.Size() / HashSize
@@ -234,7 +234,7 @@ func NewFile(suite abstract.Suite, path string) (*File, error) {
 	blocks := (fi.Size() + BlockSize - 1) / BlockSize
 
 	x := &File{
-		Name: path,
+		Name:   path,
 		Hashes: make(map[string]int64, blocks),
 	}
 
@@ -259,7 +259,7 @@ func ParseServerList(path string) []string {
 	}
 	scan := bufio.NewScanner(bytes.NewReader(servers))
 	ss := []string{}
-	for ; scan.Scan(); {
+	for scan.Scan() {
 		ss = append(ss, string(scan.Bytes()))
 	}
 	return ss

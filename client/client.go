@@ -188,7 +188,7 @@ func (c *Client) UploadKeys(idx int) {
 	rand := c.suite.Cipher(abstract.RandomKey)
 	keyPts := make([]abstract.Point, len(c.servers))
 	for i := range keyPts {
-		secret := c.g.Secret().Pick(rand)
+		secret := c.g.Scalar().Pick(rand)
 		public := c.g.Point().Mul(gen, secret)
 		keyPts[i] = public
 		c.keys[i] = MarshalPoint(public)
@@ -224,8 +224,8 @@ func (c *Client) UploadKeys(idx int) {
 func (c *Client) ShareSecret() {
 	gen := c.g.Point().Base()
 	rand := c.suite.Cipher(abstract.RandomKey)
-	secret1 := c.g.Secret().Pick(rand)
-	secret2 := c.g.Secret().Pick(rand)
+	secret1 := c.g.Scalar().Pick(rand)
+	secret2 := c.g.Scalar().Pick(rand)
 	public1 := c.g.Point().Mul(gen, secret1)
 	public2 := c.g.Point().Mul(gen, secret2)
 
@@ -524,7 +524,7 @@ func (c *Client) Keys() [][]byte {
 func main() {
 	var wf *string = flag.String("w", "", "wanted [file]") //torrent file
 	var f *string = flag.String("f", "", "file [file]")    //file in possession
-	var s *int = flag.Int("i", 0, "server [id]")           //my server id
+	var s *int = flag.Int("i", 0, "server [id]")           //server id you are connectin to
 	var servers *string = flag.String("s", "", "servers [file]")
 	var mode *string = flag.String("m", "", "mode [m for microblogging|f for file sharing]")
 	flag.Parse()
@@ -535,7 +535,7 @@ func main() {
 	c.Register(0)
 	c.RegisterDone(0)
 	c.ShareSecret()
-	//c.UploadKeys(0)
+	c.UploadKeys(0)
 
 	fmt.Println("Started client", c.id)
 
@@ -557,11 +557,11 @@ func main() {
 			log.Fatal("Failed reading the torrent file", err)
 		}
 
-		// newFile := fmt.Sprintf("%s.file", *wf)
-		// nf, err := os.Create(newFile)
-		// if err != nil {
-		// 	log.Fatal("Failed creating dest file", err)
-		// }
+		newFile := fmt.Sprintf("%s.file", *wf)
+		nf, err := os.Create(newFile)
+		if err != nil {
+			log.Fatal("Failed creating dest file", err)
+		}
 
 		wantedArr := make([][]byte, len(wanted)+(len(wanted)%MaxRounds))
 		i := 0
@@ -569,13 +569,6 @@ func main() {
 			wantedArr[i] = []byte(k)
 			i++
 		}
-
-		// block := make([]byte, BlockSize)
-		// rand.Read(block)
-		// h := c.suite.Hash()
-		// h.Write(block)
-		// block = h.Sum(block)
-		// fmt.Println(block[BlockSize:])
 
 		var r uint64 = 0
 		for ; r < MaxRounds; r++ {
@@ -585,17 +578,24 @@ func main() {
 				for r < uint64(len(wantedArr)) {
 					hash, hashes := c.RequestBlock(wantedArr[r], r)
 					hashes = c.Upload(hashes, r)
-					c.Download(hash, hashes, r)
+					res := c.Download(hash, hashes, r)
 					t := time.Now()
-					//hashes := c.UploadBlock(Block{Block: block, Round: r, Id: c.id})
 					if c.id == 0 {
 						fmt.Printf("Round %d: %s\n", r, time.Since(t))
+					}
+					numWritten, err := nf.WriteAt(res, int64(wanted[string(wantedArr[r])]))
+					if numWritten != len(res) || err != nil {
+						log.Fatal("Couldn't write to the file", err)
 					}
 					r += MaxRounds
 				}
 			}(r)
 		}
 		wg.Wait()
+		err = nf.Close()
+		if err != nil {
+			log.Fatal("Couldn't close the file", err)
+		}
 	} else {
 		var r uint64 = 0
 		for ; r < MaxRounds; r++ {

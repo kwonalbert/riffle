@@ -2,6 +2,7 @@
 package main
 
 import (
+	"crypto/cipher"
 	"encoding/binary"
 	"errors"
 	"flag"
@@ -33,30 +34,28 @@ var debug = false
 
 //any variable/func with 2: similar object as s-c but only s-s
 type Server struct {
-	port1       int
-	port2       int
-	id          int
-	servers     []string //other servers
-	rpcServers  []*rpc.Client
-	regLock     []*sync.Mutex //registration mutex
-	regChan     chan bool
-	regDone     chan bool
-	connectDone chan bool
-	running     chan bool
-	secretLock  *sync.Mutex
+	port1      int
+	id         int
+	servers    []string //other servers
+	rpcServers []*rpc.Client
+	regLock    []*sync.Mutex //registration mutex
+	regChan    chan bool
+	regDone    chan bool
+	running    chan bool
+	secretLock *sync.Mutex
 
 	FSMode bool //true for microblogging, false for file sharing
 
 	//crypto
 	suite      abstract.Suite
 	g          abstract.Group
-	sk         abstract.Secret //secret and public elgamal key
+	sk         abstract.Scalar //secret and public elgamal key
 	pk         abstract.Point
 	pkBin      []byte
 	pks        []abstract.Point //all servers pks
 	nextPks    []abstract.Point
 	nextPksBin [][]byte
-	ephSecret  abstract.Secret
+	ephSecret  abstract.Scalar
 
 	//used during key shuffle
 	pi             []int
@@ -105,13 +104,13 @@ type Round struct {
 //Initial Setup
 //////////////////////////////
 
-func NewServer(port1 int, port2 int, id int, servers []string, FSMode bool) *Server {
+func NewServer(port1 int, id int, servers []string, FSMode bool) *Server {
 	suite := edwards.NewAES128SHA256Ed25519(false)
 	rand := suite.Cipher(abstract.RandomKey)
-	sk := suite.Secret().Pick(rand)
+	sk := suite.Scalar().Pick(rand)
 	pk := suite.Point().Mul(nil, sk)
 	pkBin := MarshalPoint(pk)
-	ephSecret := suite.Secret().Pick(rand)
+	ephSecret := suite.Scalar().Pick(rand)
 
 	rounds := make([]*Round, MaxRounds)
 
@@ -137,16 +136,14 @@ func NewServer(port1 int, port2 int, id int, servers []string, FSMode bool) *Ser
 	}
 
 	s := Server{
-		port1:       port1,
-		port2:       port2,
-		id:          id,
-		servers:     servers,
-		regLock:     []*sync.Mutex{new(sync.Mutex), new(sync.Mutex)},
-		regChan:     make(chan bool, TotalClients),
-		regDone:     make(chan bool),
-		connectDone: make(chan bool),
-		running:     make(chan bool),
-		secretLock:  new(sync.Mutex),
+		port1:      port1,
+		id:         id,
+		servers:    servers,
+		regLock:    []*sync.Mutex{new(sync.Mutex), new(sync.Mutex)},
+		regChan:    make(chan bool, TotalClients),
+		regDone:    make(chan bool),
+		running:    make(chan bool),
+		secretLock: new(sync.Mutex),
 
 		suite:      suite,
 		g:          suite,
@@ -190,7 +187,6 @@ func NewServer(port1 int, port2 int, id int, servers []string, FSMode bool) *Ser
 ////////////////////////////////
 
 func (s *Server) runHandlers() {
-	//<-s.connectDone
 	<-s.regDone
 
 	runHandler(s.gatherKeys, 1)
@@ -242,9 +238,6 @@ func (s *Server) shuffleRequests(round uint64) {
 
 	t := time.Now()
 	if s.id == len(s.servers)-1 {
-		if len(input[0]) != (BlockSize + HashSize) {
-			log.Fatal("size mismatch!")
-		}
 		var wg sync.WaitGroup
 		for _, rpcServer := range s.rpcServers {
 			wg.Add(1)
@@ -475,7 +468,7 @@ func (s *Server) shuffleKeys(_ uint64) {
 			rand := s.suite.Cipher(abstract.RandomKey)
 			var prover proof.Prover
 			var err error
-			Xbarss[i], Ybarss[i], prover = shuffle.Shuffle2(s.pi, s.g, nil, pk, Xss[i], Yss[i], rand)
+			Xbarss[i], Ybarss[i], prover = Shuffle(s.pi, s.g, nil, pk, Xss[i], Yss[i], rand)
 			prfs[i], err = proof.HashProve(s.suite, "PairShuffle", rand, prover)
 			if err != nil {
 				log.Fatal("Shuffle proof failed: " + err.Error())
@@ -639,6 +632,7 @@ func (s *Server) RegisterDone2(numClients int, _ *int) error {
 	s.regDone <- true
 	fmt.Println(s.id, "Register done")
 	<-s.running
+	fmt.Println(s.id, "running")
 	return nil
 }
 
@@ -649,7 +643,7 @@ func (s *Server) connectServers() {
 		var err error = errors.New("")
 		for err != nil {
 			if i == s.id { //make a local rpc
-				addr := fmt.Sprintf("127.0.0.1:%d", s.port2)
+				addr := fmt.Sprintf("127.0.0.1:%d", s.port1)
 				rpcServer, err = rpc.Dial("tcp", addr)
 			} else {
 				rpcServer, err = rpc.Dial("tcp", s.servers[i])
@@ -681,7 +675,6 @@ func (s *Server) connectServers() {
 		s.nextPksBin[i] = MarshalPoint(pk)
 	}
 	s.rpcServers = rpcServers
-	//s.connectDone <- true
 }
 
 func (s *Server) GetNumClients(_ int, num *int) error {
@@ -704,7 +697,7 @@ func (s *Server) shareSecret(clientPublic abstract.Point) (abstract.Point, abstr
 	s.secretLock.Lock()
 	rand := s.suite.Cipher(abstract.RandomKey)
 	gen := s.g.Point().Base()
-	secret := s.g.Secret().Pick(rand)
+	secret := s.g.Scalar().Pick(rand)
 	public := s.g.Point().Mul(gen, secret)
 	sharedSecret := s.g.Point().Mul(clientPublic, secret)
 	s.secretLock.Unlock()
@@ -930,27 +923,6 @@ func (s *Server) PutClientBlock(cblock ClientBlock, _ *int) error {
 /////////////////////////////////
 //Misc
 ////////////////////////////////
-//used for the local test function to start the server
-func (s *Server) MainLoop() error {
-	rpcServer1 := rpc.NewServer()
-	rpcServer2 := rpc.NewServer()
-	rpcServer1.Register(s)
-	rpcServer2.Register(s)
-	l1, err := net.Listen("tcp", fmt.Sprintf(":%d", s.port1))
-	if err != nil {
-		log.Fatal("Cannot starting listening to the port: ", err)
-	}
-	l2, err := net.Listen("tcp", fmt.Sprintf(":%d", s.port2))
-	if err != nil {
-		log.Fatal("Cannot starting listening to the port: ", err)
-	}
-	go rpcServer1.Accept(l1)
-	go rpcServer2.Accept(l2)
-	s.connectServers()
-	go s.runHandlers()
-	return nil
-}
-
 func (s *Server) verifyShuffle(ik InternalKey, aux AuxKeyProof) bool {
 	Xss := aux.OrigXss
 	Yss := aux.OrigYss
@@ -1002,16 +974,37 @@ func (s *Server) shuffle(input [][]byte, round uint64) {
 	aesWG.Wait()
 }
 
-func (s *Server) Masks() [][][]byte {
-	return s.maskss
-}
+func Shuffle(pi []int, group abstract.Group, g, h abstract.Point, X, Y []abstract.Point,
+	rand cipher.Stream) (XX, YY []abstract.Point, P proof.Prover) {
 
-func (s *Server) Secrets() [][][]byte {
-	return s.secretss
-}
+	k := len(X)
+	if k != len(Y) {
+		panic("X,Y vectors have inconsistent length")
+	}
 
-func (s *Server) Keys() [][]byte {
-	return s.keys
+	ps := shuffle.PairShuffle{}
+	ps.Init(group, k)
+
+	// Pick a fresh ElGamal blinding factor for each pair
+	beta := make([]abstract.Scalar, k)
+	for i := 0; i < k; i++ {
+		beta[i] = group.Scalar().Pick(rand)
+	}
+
+	// Create the output pair vectors
+	Xbar := make([]abstract.Point, k)
+	Ybar := make([]abstract.Point, k)
+	for i := 0; i < k; i++ {
+		Xbar[i] = group.Point().Mul(g, beta[pi[i]])
+		Xbar[i].Add(Xbar[i], X[pi[i]])
+		Ybar[i] = group.Point().Mul(h, beta[pi[i]])
+		Ybar[i].Add(Ybar[i], Y[pi[i]])
+	}
+
+	prover := func(ctx proof.ProverContext) error {
+		return ps.Prove(pi, g, h, beta, X, Y, rand, ctx)
+	}
+	return Xbar, Ybar, prover
 }
 
 func runHandler(f func(uint64), rounds uint64) {
@@ -1039,7 +1032,6 @@ func main() {
 	var memprofile = flag.String("memprofile", "", "write memory profile to this file")
 	var id *int = flag.Int("i", 0, "id [num]")
 	var port1 *int = flag.Int("p1", 8000, "port1 [num]")
-	var port2 *int = flag.Int("p2", 8001, "port2 [num]")
 	var servers *string = flag.String("s", "", "servers [file]")
 	var numClients *int = flag.Int("n", 0, "num clients [num]")
 	var mode *string = flag.String("m", "", "mode [m for microblogging|f for file sharing]")
@@ -1056,9 +1048,9 @@ func main() {
 
 	ss := ParseServerList(*servers)
 
-	SetTotalClients(*numClients)
+	TotalClients = *numClients
 
-	s := NewServer(*port1, *port2, *id, ss, *mode == "f")
+	s := NewServer(*port1, *id, ss, *mode == "f")
 
 	if *memprofile != "" {
 		f, err := os.Create(*memprofile)
@@ -1069,19 +1061,12 @@ func main() {
 	}
 
 	rpcServer1 := rpc.NewServer()
-	rpcServer2 := rpc.NewServer()
 	rpcServer1.Register(s)
-	rpcServer2.Register(s)
 	l1, err := net.Listen("tcp", fmt.Sprintf(":%d", s.port1))
 	if err != nil {
 		log.Fatal("Cannot starting listening to the port: ", err)
 	}
-	l2, err := net.Listen("tcp", fmt.Sprintf(":%d", s.port2))
-	if err != nil {
-		log.Fatal("Cannot starting listening to the port: ", err)
-	}
 	go rpcServer1.Accept(l1)
-	go rpcServer2.Accept(l2)
 	s.connectServers()
 	fmt.Println("Starting server", *id)
 	s.runHandlers()
