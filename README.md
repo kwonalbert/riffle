@@ -30,7 +30,7 @@ NaCl and [sha3](http://golang.org/x/crypto/sha3).
 
 Build the two by running
 
-  $ go install ./client ./server
+    $ go install ./client ./server
 
 ## Running tests
 
@@ -49,7 +49,7 @@ file is uploaded.
 
 To run this, you need to first generate the files. To do so, run
 
-  $ python2 ./scripts/gen_file.py <num_clients> <num_blocks> <block_size> <dst_dir>
+    $ python2 ./scripts/gen_file.py <num_clients> <num_blocks> <block_size> <dst_dir>
 
 * num_clients: number of clients in the system, and thus number of
  files to generate
@@ -73,7 +73,7 @@ is broadcast to everyone. Currently, it just sends random messages.
 You can run a local test, where each server runs on a port on
 localhost, by running
 
-  $ python2 ./scripts/test_local.py <num_servers> <num_clients> <mode> <file_dir>
+    $ python2 ./scripts/test_local.py <num_servers> <num_clients> <mode> <file_dir>
 
 * num_servers: number of servers in the test
 
