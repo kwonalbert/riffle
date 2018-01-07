@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io/ioutil"
@@ -13,8 +14,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dedis/crypto/abstract"
-	"github.com/dedis/crypto/random"
+	"github.com/dedis/kyber"
+	"github.com/dedis/kyber/util/random"
 )
 
 func SetBit(n_int int, b bool, bs []byte) {
@@ -86,21 +87,30 @@ func GeneratePI(size int) []int {
 	return pi
 }
 
-func Encrypt(g abstract.Group, msg []byte, pks []abstract.Point) ([]abstract.Point, []abstract.Point) {
-	c1s := []abstract.Point{}
-	c2s := []abstract.Point{}
-	var msgPt abstract.Point
-	remainder := msg
-	for len(remainder) != 0 {
-		msgPt, remainder = g.Point().Pick(remainder, random.Stream)
+func Encrypt(g kyber.Group, msg []byte, pks []kyber.Point) ([]kyber.Point, []kyber.Point) {
+	c1s := []kyber.Point{}
+	c2s := []kyber.Point{}
+	msgPt := g.Point()
+	done := false
+	i := 0
+	l := msgPt.EmbedLen()
+	for !done {
+		start := i * l
+		end := (i + 1) * l
+		if end > len(msg) {
+			end = len(msg)
+		}
+		msgPt = g.Point().Embed(msg[start:end], random.Stream)
+		i++
+
 		k := g.Scalar().Pick(random.Stream)
-		c1 := g.Point().Mul(nil, k)
-		var c2 abstract.Point = nil
+		c1 := g.Point().Mul(k, nil)
+		var c2 kyber.Point = nil
 		for _, pk := range pks {
 			if c2 == nil {
-				c2 = g.Point().Mul(pk, k)
+				c2 = g.Point().Mul(k, pk)
 			} else {
-				c2 = c2.Add(c2, g.Point().Mul(pk, k))
+				c2 = c2.Add(c2, g.Point().Mul(k, pk))
 			}
 		}
 		c2 = c2.Add(c2, msgPt)
@@ -110,31 +120,31 @@ func Encrypt(g abstract.Group, msg []byte, pks []abstract.Point) ([]abstract.Poi
 	return c1s, c2s
 }
 
-func EncryptKey(g abstract.Group, msgPt abstract.Point, pks []abstract.Point) (abstract.Point, abstract.Point) {
+func EncryptKey(g kyber.Group, msgPt kyber.Point, pks []kyber.Point) (kyber.Point, kyber.Point) {
 	k := g.Scalar().Pick(random.Stream)
-	c1 := g.Point().Mul(nil, k)
-	var c2 abstract.Point = nil
+	c1 := g.Point().Mul(k, nil)
+	var c2 kyber.Point = nil
 	for _, pk := range pks {
 		if c2 == nil {
-			c2 = g.Point().Mul(pk, k)
+			c2 = g.Point().Mul(k, pk)
 		} else {
-			c2 = c2.Add(c2, g.Point().Mul(pk, k))
+			c2 = c2.Add(c2, g.Point().Mul(k, pk))
 		}
 	}
 	c2 = c2.Add(c2, msgPt)
 	return c1, c2
 }
 
-func EncryptPoint(g abstract.Group, msgPt abstract.Point, pk abstract.Point) (abstract.Point, abstract.Point) {
+func EncryptPoint(g kyber.Group, msgPt kyber.Point, pk kyber.Point) (kyber.Point, kyber.Point) {
 	k := g.Scalar().Pick(random.Stream)
-	c1 := g.Point().Mul(nil, k)
-	c2 := g.Point().Mul(pk, k)
+	c1 := g.Point().Mul(k, nil)
+	c2 := g.Point().Mul(k, pk)
 	c2 = c2.Add(c2, msgPt)
 	return c1, c2
 }
 
-func Decrypt(g abstract.Group, c1 abstract.Point, c2 abstract.Point, sk abstract.Scalar) abstract.Point {
-	return g.Point().Sub(c2, g.Point().Mul(c1, sk))
+func Decrypt(g kyber.Group, c1 kyber.Point, c2 kyber.Point, sk kyber.Scalar) kyber.Point {
+	return g.Point().Sub(c2, g.Point().Mul(sk, c1))
 }
 
 func Membership(res []byte, set [][]byte) int {
@@ -151,7 +161,7 @@ func Membership(res []byte, set [][]byte) int {
 	return -1
 }
 
-func MarshalPoint(pt abstract.Point) []byte {
+func MarshalPoint(pt kyber.Point) []byte {
 	buf := new(bytes.Buffer)
 	ptByte := make([]byte, SecretSize)
 	pt.MarshalTo(buf)
@@ -159,7 +169,7 @@ func MarshalPoint(pt abstract.Point) []byte {
 	return ptByte
 }
 
-func UnmarshalPoint(suite abstract.Suite, ptByte []byte) abstract.Point {
+func UnmarshalPoint(suite kyber.Group, ptByte []byte) kyber.Point {
 	buf := bytes.NewBuffer(ptByte)
 	pt := suite.Point()
 	pt.UnmarshalFrom(buf)
@@ -220,7 +230,7 @@ func NewDesc(path string) (map[string]int64, error) {
 	return hashes, nil
 }
 
-func NewFile(suite abstract.Suite, path string) (*File, error) {
+func NewFile(suite kyber.Group, path string) (*File, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		log.Fatal("Failed opening file", path, err)
@@ -244,7 +254,7 @@ func NewFile(suite abstract.Suite, path string) (*File, error) {
 		if err != nil {
 			log.Fatal("Failed reading file", err)
 		}
-		h := suite.Hash()
+		h := sha256.New()
 		h.Write(tmp)
 		x.Hashes[string(h.Sum(nil))] = int64((i * BlockSize))
 	}

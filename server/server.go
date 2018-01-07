@@ -2,7 +2,6 @@
 package main
 
 import (
-	"crypto/cipher"
 	"encoding/binary"
 	"errors"
 	"flag"
@@ -19,10 +18,11 @@ import (
 
 	. "github.com/kwonalbert/riffle/lib" //types and utils
 
-	"github.com/dedis/crypto/abstract"
-	"github.com/dedis/crypto/edwards"
-	"github.com/dedis/crypto/proof"
-	"github.com/dedis/crypto/shuffle"
+	"github.com/dedis/kyber"
+	"github.com/dedis/kyber/cipher"
+	"github.com/dedis/kyber/group/edwards25519"
+	"github.com/dedis/kyber/proof"
+	"github.com/dedis/kyber/shuffle"
 
 	"golang.org/x/crypto/nacl/secretbox"
 	"golang.org/x/crypto/sha3"
@@ -47,15 +47,15 @@ type Server struct {
 	FSMode bool //true for microblogging, false for file sharing
 
 	//crypto
-	suite      abstract.Suite
-	g          abstract.Group
-	sk         abstract.Scalar //secret and public elgamal key
-	pk         abstract.Point
+	suite      *edwards25519.SuiteEd25519
+	g          kyber.Group
+	sk         kyber.Scalar //secret and public elgamal key
+	pk         kyber.Point
 	pkBin      []byte
-	pks        []abstract.Point //all servers pks
-	nextPks    []abstract.Point
+	pks        []kyber.Point //all servers pks
+	nextPks    []kyber.Point
 	nextPksBin [][]byte
-	ephSecret  abstract.Scalar
+	ephSecret  kyber.Scalar
 
 	//used during key shuffle
 	pi             []int
@@ -105,10 +105,10 @@ type Round struct {
 //////////////////////////////
 
 func NewServer(port1 int, id int, servers []string, FSMode bool) *Server {
-	suite := edwards.NewAES128SHA256Ed25519(false)
-	rand := suite.Cipher(abstract.RandomKey)
+	suite := edwards25519.NewAES128SHA256Ed25519()
+	rand := suite.Cipher(cipher.RandomKey)
 	sk := suite.Scalar().Pick(rand)
-	pk := suite.Point().Mul(nil, sk)
+	pk := suite.Point().Mul(sk, nil)
 	pkBin := MarshalPoint(pk)
 	ephSecret := suite.Scalar().Pick(rand)
 
@@ -150,8 +150,8 @@ func NewServer(port1 int, id int, servers []string, FSMode bool) *Server {
 		sk:         sk,
 		pk:         pk,
 		pkBin:      pkBin,
-		pks:        make([]abstract.Point, len(servers)),
-		nextPks:    make([]abstract.Point, len(servers)),
+		pks:        make([]kyber.Point, len(servers)),
+		nextPks:    make([]kyber.Point, len(servers)),
 		nextPksBin: make([][]byte, len(servers)),
 		ephSecret:  ephSecret,
 
@@ -443,29 +443,29 @@ func (s *Server) shuffleKeys(_ uint64) {
 
 	serversLeft := len(s.servers) - s.id
 
-	Xss := make([][]abstract.Point, serversLeft)
-	Yss := make([][]abstract.Point, serversLeft)
+	Xss := make([][]kyber.Point, serversLeft)
+	Yss := make([][]kyber.Point, serversLeft)
 	for i := range Xss {
-		Xss[i] = make([]abstract.Point, s.totalClients)
-		Yss[i] = make([]abstract.Point, s.totalClients)
+		Xss[i] = make([]kyber.Point, s.totalClients)
+		Yss[i] = make([]kyber.Point, s.totalClients)
 		for j := range Xss[i] {
 			Xss[i][j] = UnmarshalPoint(s.suite, keys.Xss[i+1][j])
 			Yss[i][j] = UnmarshalPoint(s.suite, keys.Yss[i+1][j])
 		}
 	}
 
-	Xbarss := make([][]abstract.Point, serversLeft)
-	Ybarss := make([][]abstract.Point, serversLeft)
-	decss := make([][]abstract.Point, serversLeft)
+	Xbarss := make([][]kyber.Point, serversLeft)
+	Ybarss := make([][]kyber.Point, serversLeft)
+	decss := make([][]kyber.Point, serversLeft)
 	prfs := make([][]byte, serversLeft)
 
 	var shuffleWG sync.WaitGroup
 	for i := 0; i < serversLeft; i++ {
 		shuffleWG.Add(1)
-		go func(i int, pk abstract.Point) {
+		go func(i int, pk kyber.Point) {
 			defer shuffleWG.Done()
 			//only one chunk
-			rand := s.suite.Cipher(abstract.RandomKey)
+			rand := s.suite.Cipher(cipher.RandomKey)
 			var prover proof.Prover
 			var err error
 			Xbarss[i], Ybarss[i], prover = Shuffle(s.pi, s.g, nil, pk, Xss[i], Yss[i], rand)
@@ -474,7 +474,7 @@ func (s *Server) shuffleKeys(_ uint64) {
 				log.Fatal("Shuffle proof failed: " + err.Error())
 			}
 			var decWG sync.WaitGroup
-			decss[i] = make([]abstract.Point, s.totalClients)
+			decss[i] = make([]kyber.Point, s.totalClients)
 			for j := range decss[i] {
 				decWG.Add(1)
 				go func(i int, j int) {
@@ -693,13 +693,13 @@ func (s *Server) UploadKeys(key *UpKey, _ *int) error {
 	return nil
 }
 
-func (s *Server) shareSecret(clientPublic abstract.Point) (abstract.Point, abstract.Point) {
+func (s *Server) shareSecret(clientPublic kyber.Point) (kyber.Point, kyber.Point) {
 	s.secretLock.Lock()
-	rand := s.suite.Cipher(abstract.RandomKey)
+	rand := s.suite.Cipher(cipher.RandomKey)
 	gen := s.g.Point().Base()
 	secret := s.g.Scalar().Pick(rand)
-	public := s.g.Point().Mul(gen, secret)
-	sharedSecret := s.g.Point().Mul(clientPublic, secret)
+	public := s.g.Point().Mul(secret, gen)
+	sharedSecret := s.g.Point().Mul(secret, clientPublic)
 	s.secretLock.Unlock()
 	return public, sharedSecret
 }
@@ -734,7 +734,7 @@ func (s *Server) ShareSecret(clientDH *ClientDH, serverPub *[]byte) error {
 }
 
 func (s *Server) GetEphKey(_ int, serverPub *[]byte) error {
-	pub := s.g.Point().Mul(s.g.Point().Base(), s.ephSecret)
+	pub := s.g.Point().Mul(s.ephSecret, s.g.Point().Base())
 	*serverPub = MarshalPoint(pub)
 	return nil
 }
@@ -932,10 +932,10 @@ func (s *Server) verifyShuffle(ik InternalKey, aux AuxKeyProof) bool {
 
 	for i := range Xss {
 		pk := UnmarshalPoint(s.suite, ik.Keys[i])
-		Xs := make([]abstract.Point, len(Xss[i]))
-		Ys := make([]abstract.Point, len(Yss[i]))
-		Xbars := make([]abstract.Point, len(Xbarss[i]))
-		Ybars := make([]abstract.Point, len(Ybarss[i]))
+		Xs := make([]kyber.Point, len(Xss[i]))
+		Ys := make([]kyber.Point, len(Yss[i]))
+		Xbars := make([]kyber.Point, len(Xbarss[i]))
+		Ybars := make([]kyber.Point, len(Ybarss[i]))
 		for j := range Xss[i] {
 			Xs[j] = UnmarshalPoint(s.suite, Xss[i][j])
 			Ys[j] = UnmarshalPoint(s.suite, Yss[i][j])
@@ -974,8 +974,8 @@ func (s *Server) shuffle(input [][]byte, round uint64) {
 	aesWG.Wait()
 }
 
-func Shuffle(pi []int, group abstract.Group, g, h abstract.Point, X, Y []abstract.Point,
-	rand cipher.Stream) (XX, YY []abstract.Point, P proof.Prover) {
+func Shuffle(pi []int, group kyber.Group, g, h kyber.Point, X, Y []kyber.Point,
+	rand cipher.Stream) (XX, YY []kyber.Point, P proof.Prover) {
 
 	k := len(X)
 	if k != len(Y) {
@@ -986,18 +986,18 @@ func Shuffle(pi []int, group abstract.Group, g, h abstract.Point, X, Y []abstrac
 	ps.Init(group, k)
 
 	// Pick a fresh ElGamal blinding factor for each pair
-	beta := make([]abstract.Scalar, k)
+	beta := make([]kyber.Scalar, k)
 	for i := 0; i < k; i++ {
 		beta[i] = group.Scalar().Pick(rand)
 	}
 
 	// Create the output pair vectors
-	Xbar := make([]abstract.Point, k)
-	Ybar := make([]abstract.Point, k)
+	Xbar := make([]kyber.Point, k)
+	Ybar := make([]kyber.Point, k)
 	for i := 0; i < k; i++ {
-		Xbar[i] = group.Point().Mul(g, beta[pi[i]])
+		Xbar[i] = group.Point().Mul(beta[pi[i]], g)
 		Xbar[i].Add(Xbar[i], X[pi[i]])
-		Ybar[i] = group.Point().Mul(h, beta[pi[i]])
+		Ybar[i] = group.Point().Mul(beta[pi[i]], h)
 		Ybar[i].Add(Ybar[i], Y[pi[i]])
 	}
 

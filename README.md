@@ -16,7 +16,7 @@ communication.
 Requires Go 1.5 or later for building the code, and the
 scripts are written for python2 (not 3).
 
-It uses the [DeDis Crypto library](https://github.com/dedis/crypto)
+It uses the [DeDis Kyber library](https://github.com/dedis/kyber)
 as well as [SecretBox](http://golang.org/x/crypto/nacl/secretbox) of
 NaCl and [sha3](http://golang.org/x/crypto/sha3).
 

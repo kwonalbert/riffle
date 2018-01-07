@@ -14,8 +14,9 @@ import (
 
 	. "github.com/kwonalbert/riffle/lib" //types and utils
 
-	"github.com/dedis/crypto/abstract"
-	"github.com/dedis/crypto/edwards"
+	"github.com/dedis/kyber"
+	"github.com/dedis/kyber/cipher"
+	"github.com/dedis/kyber/group/edwards25519"
 
 	"golang.org/x/crypto/nacl/secretbox"
 	"golang.org/x/crypto/sha3"
@@ -40,12 +41,12 @@ type Client struct {
 	testPieces map[string][]byte //used only for testing
 
 	//crypto
-	suite abstract.Suite
-	g     abstract.Group
-	pks   []abstract.Point //server public keys
+	suite *edwards25519.SuiteEd25519
+	g     kyber.Group
+	pks   []kyber.Point //server public keys
 
 	keys    [][]byte
-	ephKeys []abstract.Point
+	ephKeys []kyber.Point
 
 	//downloading
 	dhashes  chan []byte //hash to download (per round)
@@ -66,7 +67,7 @@ type Round struct {
 }
 
 func NewClient(servers []string, myServer string, FSMode bool) *Client {
-	suite := edwards.NewAES128SHA256Ed25519(false)
+	suite := edwards25519.NewAES128SHA256Ed25519()
 
 	myServerIdx := -1
 	rpcServers := make([]*rpc.Client, len(servers))
@@ -81,7 +82,7 @@ func NewClient(servers []string, myServer string, FSMode bool) *Client {
 		rpcServers[i] = rpcServer
 	}
 
-	pks := make([]abstract.Point, len(servers))
+	pks := make([]kyber.Point, len(servers))
 	var wg sync.WaitGroup
 	for i, rpcServer := range rpcServers {
 		wg.Add(1)
@@ -132,7 +133,7 @@ func NewClient(servers []string, myServer string, FSMode bool) *Client {
 		pks:   pks,
 
 		keys:    make([][]byte, len(servers)),
-		ephKeys: make([]abstract.Point, len(servers)),
+		ephKeys: make([]kyber.Point, len(servers)),
 
 		dhashes:  make(chan []byte, MaxRounds),
 		maskss:   nil,
@@ -181,15 +182,15 @@ func (c *Client) UploadKeys(idx int) {
 	if c.id == 0 {
 		defer TimeTrack(time.Now(), "sharing keys")
 	}
-	c1s := make([]abstract.Point, len(c.servers))
-	c2s := make([]abstract.Point, len(c.servers))
+	c1s := make([]kyber.Point, len(c.servers))
+	c2s := make([]kyber.Point, len(c.servers))
 
 	gen := c.g.Point().Base()
-	rand := c.suite.Cipher(abstract.RandomKey)
-	keyPts := make([]abstract.Point, len(c.servers))
+	rand := c.suite.Cipher(cipher.RandomKey)
+	keyPts := make([]kyber.Point, len(c.servers))
 	for i := range keyPts {
 		secret := c.g.Scalar().Pick(rand)
-		public := c.g.Point().Mul(gen, secret)
+		public := c.g.Point().Mul(secret, gen)
 		keyPts[i] = public
 		c.keys[i] = MarshalPoint(public)
 	}
@@ -223,11 +224,11 @@ func (c *Client) UploadKeys(idx int) {
 //share one time secret with the server
 func (c *Client) ShareSecret() {
 	gen := c.g.Point().Base()
-	rand := c.suite.Cipher(abstract.RandomKey)
+	rand := c.suite.Cipher(cipher.RandomKey)
 	secret1 := c.g.Scalar().Pick(rand)
 	secret2 := c.g.Scalar().Pick(rand)
-	public1 := c.g.Point().Mul(gen, secret1)
-	public2 := c.g.Point().Mul(gen, secret2)
+	public1 := c.g.Point().Mul(secret1, gen)
+	public2 := c.g.Point().Mul(secret2, gen)
 
 	//generate share secrets via Diffie-Hellman w/ all servers
 	//one used for masks, one used for one-time pad
@@ -257,10 +258,10 @@ func (c *Client) ShareSecret() {
 			<-call1.Done
 			<-call2.Done
 			<-call3.Done
-			masks[i] = MarshalPoint(c.g.Point().Mul(UnmarshalPoint(c.suite, servPub1), secret1))
+			masks[i] = MarshalPoint(c.g.Point().Mul(secret1, UnmarshalPoint(c.g, servPub1)))
 			// c.masks[i] = make([]byte, SecretSize)
 			// c.masks[i][c.id] = 1
-			secrets[i] = MarshalPoint(c.g.Point().Mul(UnmarshalPoint(c.suite, servPub2), secret2))
+			secrets[i] = MarshalPoint(c.g.Point().Mul(secret2, UnmarshalPoint(c.g, servPub2)))
 			//secrets[i] = make([]byte, SecretSize)
 			c.ephKeys[i] = UnmarshalPoint(c.suite, servPub3)
 		}(i, rpcServer, cs1, cs2)
